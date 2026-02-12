@@ -39,6 +39,8 @@ export interface RegisteredGroup {
   added_at: string;
   containerConfig?: ContainerConfig;
   requiresTrigger?: boolean; // Default: true for groups, false for solo chats
+  allowedUsers?: string[]; // Feishu user IDs for private chat access
+  isMainSession?: boolean; // Feishu main session marker
 }
 
 export interface NewMessage {
@@ -48,6 +50,7 @@ export interface NewMessage {
   sender_name: string;
   content: string;
   timestamp: string;
+  chat_type?: 'private' | 'group'; // Feishu chat type
   is_from_me?: boolean;
 }
 

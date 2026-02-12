@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import 'dotenv/config';
 
 import {
   ASSISTANT_NAME,
@@ -11,6 +12,7 @@ import {
   TRIGGER_PATTERN,
 } from './config.js';
 import { WhatsAppChannel } from './channels/whatsapp.js';
+import { FeishuChannel } from './channels/feishu.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -22,6 +24,7 @@ import {
   getAllRegisteredGroups,
   getAllSessions,
   getAllTasks,
+  getChat,
   getMessagesSince,
   getNewMessages,
   getRouterState,
@@ -36,7 +39,7 @@ import { GroupQueue } from './group-queue.js';
 import { startIpcWatcher } from './ipc.js';
 import { formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
-import { NewMessage, RegisteredGroup } from './types.js';
+import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
 // Re-export for backwards compatibility during refactor
@@ -48,7 +51,12 @@ let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
+const MESSENGER_TYPE =
+  (process.env.MESSENGER as 'whatsapp' | 'telegram' | 'feishu') || 'whatsapp';
+
 let whatsapp: WhatsAppChannel;
+let feishu: FeishuChannel;
+let channel: Channel | undefined;
 const queue = new GroupQueue();
 
 function loadState(): void {
@@ -165,7 +173,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }, IDLE_TIMEOUT);
   };
 
-  await whatsapp.setTyping(chatJid, true);
+  // Set typing indicator if channel supports it
+  if (channel?.setTyping) {
+    await channel.setTyping(chatJid, true);
+  }
+
   let hadError = false;
   let outputSentToUser = false;
 
@@ -177,7 +189,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
       if (text) {
-        await whatsapp.sendMessage(chatJid, `${ASSISTANT_NAME}: ${text}`);
+        await channel!.sendMessage(chatJid, `${ASSISTANT_NAME}: ${text}`);
         outputSentToUser = true;
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
@@ -189,7 +201,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   });
 
-  await whatsapp.setTyping(chatJid, false);
+  // Stop typing indicator
+  if (channel?.setTyping) {
+    await channel.setTyping(chatJid, false);
+  }
   if (idleTimer) clearTimeout(idleTimer);
 
   if (output === 'error' || hadError) {
@@ -453,6 +468,109 @@ function ensureContainerSystemRunning(): void {
   }
 }
 
+// --- Feishu helper functions ---
+
+function getExistingMainSession(): string | undefined {
+  return Object.entries(registeredGroups).find(
+    ([, g]) => g.folder === MAIN_GROUP_FOLDER || g.isMainSession === true,
+  )?.[0];
+}
+
+async function handleRegisterCommand(
+  chatJid: string,
+  senderName: string,
+  folderName?: string,
+  chatType?: 'private' | 'group',
+  senderId?: string,
+): Promise<string> {
+  if (registeredGroups[chatJid]) {
+    return `✅ Already registered as **${registeredGroups[chatJid].name}**`;
+  }
+
+  const chatInfo = getChat(chatJid);
+  const displayName = chatInfo?.name || senderName || 'Chat';
+
+  let folder: string;
+  let isMain = false;
+
+  if (folderName) {
+    folder = folderName;
+  } else if (chatType === 'private') {
+    const existing = getExistingMainSession();
+    if (existing) {
+      folder = chatInfo?.name
+        ? chatInfo.name.replace(/[^a-z0-9-]/gi, '-')
+        : `p2p-${Date.now()}`;
+    } else {
+      folder = MAIN_GROUP_FOLDER;
+      isMain = true;
+    }
+  } else {
+    folder = chatInfo?.name
+      ? chatInfo.name.replace(/[^a-z0-9-]/gi, '-')
+      : `chat-${Date.now()}`;
+  }
+
+  const trigger = isMain || chatType === 'private' ? '' : '';
+
+  registerGroup(chatJid, {
+    name: displayName,
+    folder: folder.replace(/[^a-z0-9-]/gi, '-'),
+    trigger,
+    requiresTrigger: !isMain && chatType !== 'private',
+    added_at: new Date().toISOString(),
+    allowedUsers: chatType === 'private' && senderId ? [senderId] : undefined,
+    isMainSession: isMain,
+  });
+
+  return isMain
+    ? `✅ **Main Session Registered!**\n\nName: **${displayName}**\nFolder: ${folder}`
+    : `✅ **Workspace Registered!**\n\nName: **${displayName}**\nFolder: ${folder}`;
+}
+
+async function handleRealtimeMessage(msg: NewMessage): Promise<void> {
+  const group = registeredGroups[msg.chat_jid];
+  const content = msg.content.trim();
+  const lowerContent = content.toLowerCase();
+
+  if (lowerContent === '/register' || lowerContent.startsWith('/register ')) {
+    const folderName = lowerContent.startsWith('/register ')
+      ? content.slice(9).trim()
+      : undefined;
+    const response = await handleRegisterCommand(
+      msg.chat_jid,
+      msg.sender_name,
+      folderName,
+      msg.chat_type,
+      msg.sender,
+    );
+    await channel!.sendMessage(msg.chat_jid, response);
+    lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
+    saveState();
+    return;
+  }
+
+  if (!group) {
+    await channel!.sendMessage(
+      msg.chat_jid,
+      `👋 Welcome!\n\nSend **/register** to register this chat.`,
+    );
+    return;
+  }
+
+  if (msg.chat_type === 'private' && group.allowedUsers?.length) {
+    if (!group.allowedUsers.includes(msg.sender)) {
+      await channel!.sendMessage(
+        msg.chat_jid,
+        '⛔ Not authorized for this session.',
+      );
+      return;
+    }
+  }
+
+  queue.enqueueMessageCheck(msg.chat_jid);
+}
+
 async function main(): Promise<void> {
   ensureContainerSystemRunning();
   initDatabase();
@@ -463,38 +581,60 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     await queue.shutdown(10000);
-    await whatsapp.disconnect();
+    if (channel) {
+      await channel.disconnect();
+    }
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
-  // Create WhatsApp channel
-  whatsapp = new WhatsAppChannel({
-    onMessage: (chatJid, msg) => storeMessage(msg),
-    onChatMetadata: (chatJid, timestamp) => storeChatMetadata(chatJid, timestamp),
-    registeredGroups: () => registeredGroups,
-  });
-
+  if (MESSENGER_TYPE === 'feishu') {
+    logger.info('Using Feishu messenger');
+    feishu = new FeishuChannel({
+      onMessage: (chatJid, msg) => storeMessage(msg),
+      onChatMetadata: (chatJid, timestamp, name) =>
+        storeChatMetadata(chatJid, timestamp, name),
+      registeredGroups: () => registeredGroups,
+      onRealtimeMessage: handleRealtimeMessage,
+    });
+    channel = feishu;
+  } else {
+    logger.info('Using WhatsApp messenger (default)');
+    whatsapp = new WhatsAppChannel({
+      onMessage: (chatJid, msg) => storeMessage(msg),
+      onChatMetadata: (chatJid, timestamp) =>
+        storeChatMetadata(chatJid, timestamp),
+      registeredGroups: () => registeredGroups,
+    });
+    channel = whatsapp;
+  }
   // Connect — resolves when first connected
-  await whatsapp.connect();
+  await channel.connect();
 
   // Start subsystems (independently of connection handler)
+  const sendViaChannel = async (jid: string, rawText: string) => {
+    const prefix = channel?.prefixAssistantName ? `${ASSISTANT_NAME}: ` : '';
+    const text = prefix + rawText;
+    await channel!.sendMessage(jid, text);
+  };
+
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
     queue,
     onProcess: (groupJid, proc, containerName, groupFolder) => queue.registerProcess(groupJid, proc, containerName, groupFolder),
-    sendMessage: async (jid, rawText) => {
-      const text = formatOutbound(whatsapp, rawText);
-      if (text) await whatsapp.sendMessage(jid, text);
-    },
+    sendMessage: sendViaChannel,
   });
+
   startIpcWatcher({
-    sendMessage: (jid, text) => whatsapp.sendMessage(jid, text),
+    sendMessage: (jid, text) => channel!.sendMessage(jid, text),
     registeredGroups: () => registeredGroups,
     registerGroup,
-    syncGroupMetadata: (force) => whatsapp.syncGroupMetadata(force),
+    syncGroupMetadata:
+      'syncGroupMetadata' in channel
+        ? (force) => (channel as any).syncGroupMetadata(force)
+        : async () => {},
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
   });

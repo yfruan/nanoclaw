@@ -582,3 +582,98 @@ function migrateJsonState(): void {
     }
   }
 }
+
+// --- Feishu-specific database functions ---
+
+export interface FeishuSender {
+  sender_id: { open_id?: string; user_id?: string; union_id?: string };
+  sender_type?: 'user' | 'app' | string;
+  tenant_key?: string;
+}
+
+export interface FeishuMessage {
+  message_id: string;
+  root_id?: string;
+  parent_id?: string;
+  chat_id: string;
+  chat_type: 'p2p' | 'group';
+  message_type: string;
+  content: string;
+  create_time?: string;
+  mentions?: Array<{ key: string; id: { open_id?: string }; name: string }>;
+}
+
+export function storeFeishuMessage(
+  message: FeishuMessage,
+  sender: FeishuSender,
+  chatJid: string,
+  isFromMe: boolean,
+  resolvedName?: string,
+): void {
+  const parsed = JSON.parse(message.content);
+  let text = '';
+  let mediaInfo: string | undefined;
+
+  switch (message.message_type) {
+    case 'text':
+      text = parsed.text || '';
+      break;
+    case 'post':
+      const title = parsed.zh_cn?.title || parsed.en_us?.title || '';
+      text = title ? `${title}\n\n[Rich Text]` : '[Rich Text Message]';
+      break;
+    case 'image':
+      text = '<media:image>';
+      mediaInfo = `image:${parsed.image_key}`;
+      break;
+    case 'file':
+      text = '<media:document>';
+      mediaInfo = `file:${parsed.file_key}`;
+      break;
+    default:
+      text = `[${message.message_type}]`;
+  }
+
+  const fullContent = mediaInfo ? `${text} [${mediaInfo}]` : text;
+  const timestamp = message.create_time
+    ? new Date(parseInt(message.create_time, 10)).toISOString()
+    : new Date().toISOString();
+
+  db.prepare(
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    message.message_id,
+    chatJid,
+    sender.sender_id.user_id || sender.sender_id.open_id || 'unknown',
+    resolvedName || sender.sender_id.user_id || 'Unknown',
+    fullContent,
+    timestamp,
+    isFromMe ? 1 : 0,
+  );
+}
+
+export function storeFeishuMessageEvent(
+  event: { message: FeishuMessage; sender: FeishuSender },
+  chatJid: string,
+  isFromMe: boolean,
+  resolvedName?: string,
+): void {
+  storeFeishuMessage(
+    event.message,
+    event.sender,
+    chatJid,
+    isFromMe,
+    resolvedName,
+  );
+}
+
+export function getChat(
+  chatJid: string,
+): { jid: string; name: string; last_message_time: string } | null {
+  const row = db
+    .prepare(`SELECT jid, name, last_message_time FROM chats WHERE jid = ?`)
+    .get(chatJid) as
+    | { jid: string; name: string; last_message_time: string }
+    | undefined;
+  return row || null;
+}
