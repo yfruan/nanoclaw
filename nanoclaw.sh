@@ -21,6 +21,14 @@ stop() {
     echo "Stopping NanoClaw..."
     launchctl unload "$PLIST_FILE" 2>/dev/null || true
     echo "NanoClaw stopped"
+
+    # 清理残留容器（可选）
+    if command -v container &> /dev/null; then
+        echo "Cleaning up orphaned containers..."
+        container ls -a 2>/dev/null | grep "nanoclaw-agent" | awk '{print $1}' | while read id; do
+            container stop "$id" 2>/dev/null || true
+        done
+    fi
 }
 
 restart() {

@@ -123,6 +123,24 @@ NanoClaw 会自动将以下变量注入到容器中：
 
 ## 启动服务
 
+### 使用管理脚本（推荐）
+
+```bash
+# 一键启动
+./nanoclaw.sh start
+
+# 查看状态
+./nanoclaw.sh status
+
+# 一键停止
+./nanoclaw.sh stop
+
+# 重启
+./nanoclaw.sh restart
+```
+
+### 手动启动
+
 ```bash
 # 构建项目
 npm run build
@@ -175,6 +193,17 @@ container image load -i /tmp/nanoclaw-agent-v4.tar
 ---
 
 ## 常用命令
+
+### 管理脚本
+
+```bash
+./nanoclaw.sh start    # 启动服务
+./nanoclaw.sh stop     # 停止服务
+./nanoclaw.sh restart  # 重启服务
+./nanoclaw.sh status   # 查看状态
+```
+
+### 手动命令
 
 ```bash
 # 查看运行中的容器
