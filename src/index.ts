@@ -150,6 +150,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const prompt = formatMessages(missedMessages);
 
+  // Extract imageBase64 from the latest message if present
+  const latestMessage = missedMessages[missedMessages.length - 1];
+  // Get imageBase64 from queue (set when message with image arrived)
+  const imageBase64 = queue.getAndClearPendingImage(chatJid);
+
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
   const previousCursor = lastAgentTimestamp[chatJid] || '';
@@ -199,7 +204,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (result.status === 'error') {
       hadError = true;
     }
-  });
+  }, imageBase64);
 
   // Stop typing indicator
   if (channel?.setTyping) {
@@ -229,6 +234,7 @@ async function runAgent(
   prompt: string,
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  imageBase64?: string,
 ): Promise<'success' | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
   const sessionId = sessions[group.folder];
@@ -278,6 +284,7 @@ async function runAgent(
         groupFolder: group.folder,
         chatJid,
         isMain,
+        imageBase64: imageBase64,
       },
       (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder),
       wrappedOnOutput,
@@ -566,6 +573,11 @@ async function handleRealtimeMessage(msg: NewMessage): Promise<void> {
       );
       return;
     }
+  }
+
+  // Store imageBase64 in queue for vision support
+  if (msg.imageBase64) {
+    queue.setPendingImage(msg.chat_jid, msg.imageBase64);
   }
 
   queue.enqueueMessageCheck(msg.chat_jid);

@@ -31,6 +31,8 @@ export class GroupQueue {
   private processMessagesFn: ((groupJid: string) => Promise<boolean>) | null =
     null;
   private shuttingDown = false;
+  // Store pending imageBase64 per chatJid for vision support
+  private pendingImageBase64 = new Map<string, string>();
 
   private getGroup(groupJid: string): GroupState {
     let state = this.groups.get(groupJid);
@@ -77,6 +79,18 @@ export class GroupQueue {
     }
 
     this.runForGroup(groupJid, 'messages');
+  }
+
+  // Store pending imageBase64 for a chat (for vision support)
+  setPendingImage(groupJid: string, imageBase64: string): void {
+    this.pendingImageBase64.set(groupJid, imageBase64);
+  }
+
+  // Get and clear pending imageBase64 for a chat
+  getAndClearPendingImage(groupJid: string): string | undefined {
+    const img = this.pendingImageBase64.get(groupJid);
+    this.pendingImageBase64.delete(groupJid);
+    return img;
   }
 
   enqueueTask(groupJid: string, taskId: string, fn: () => Promise<void>): void {

@@ -184,10 +184,13 @@ export class FeishuChannel implements Channel {
       storeFeishuMessageEvent(event, chatId, false, senderName);
     }
 
-    const { content, mediaInfo } = this.parseMessageContent(
-      event.message.content,
-      event.message.message_type,
-    );
+    // Parse content and download image if present
+    const { content, mediaInfo, imageKey, imageBase64 } =
+      await this.parseMessageContent(
+        event.message.content,
+        event.message.message_type,
+        event.message.message_id,
+      );
     let msgContent = mediaInfo ? `${content} ${mediaInfo}` : content;
 
     const trimmedContent = msgContent.trim().toLowerCase();
@@ -206,6 +209,8 @@ export class FeishuChannel implements Channel {
       content: msgContent,
       timestamp,
       chat_type: chatType,
+      imageBase64,
+      imageKey,
     };
 
     await this.onMessageCallback(chatId, newMessage);
@@ -216,19 +221,64 @@ export class FeishuChannel implements Channel {
     }
   }
 
-  private parseMessageContent(
+  private async parseMessageContent(
     content: string,
     messageType: string,
-  ): { content: string; mediaInfo?: string } {
+    messageId?: string,
+  ): Promise<{ content: string; mediaInfo?: string; imageKey?: string; imageBase64?: string }> {
     try {
       const parsed = JSON.parse(content);
       switch (messageType) {
         case 'text':
           return { content: parsed.text || '' };
-        case 'post':
-          return { content: '[Rich Text]' };
-        case 'image':
+        case 'post': {
+          // Parse rich text post - extract text and images
+          let text = parsed.title || '';
+          let imageKey: string | undefined;
+          let imageBase64: string | undefined;
+
+          // Parse content array (2D array of elements)
+          if (parsed.content && Array.isArray(parsed.content)) {
+            for (const row of parsed.content) {
+              if (Array.isArray(row)) {
+                for (const elem of row) {
+                  if (elem.tag === 'text' && elem.text) {
+                    text += (text ? ' ' : '') + elem.text;
+                  } else if (elem.tag === 'img' && elem.image_key && messageId) {
+                    const key = elem.image_key as string;
+                    imageKey = key;
+                    // Download first image found
+                    imageBase64 = await this.downloadImageAsBase64(key, messageId);
+                  }
+                }
+              }
+            }
+          }
+
+          if (imageKey) {
+            return {
+              content: text || '[Rich Text with image]',
+              mediaInfo: 'image',
+              imageKey,
+              imageBase64,
+            };
+          }
+          return { content: text || '[Rich Text]' };
+        }
+        case 'image': {
+          const imageKey = parsed.image_key;
+          if (imageKey && messageId) {
+            // Download image and convert to base64 for vision
+            const base64 = await this.downloadImageAsBase64(imageKey, messageId);
+            return {
+              content: '<media:image>',
+              mediaInfo: 'image',
+              imageKey,
+              imageBase64: base64,
+            };
+          }
           return { content: '<media:image>', mediaInfo: 'image' };
+        }
         case 'file':
           return { content: '<media:document>', mediaInfo: 'file' };
         case 'audio':
@@ -243,6 +293,32 @@ export class FeishuChannel implements Channel {
     } catch {
       return { content };
     }
+  }
+
+  private async downloadImageAsBase64(imageKey: string, messageId: string): Promise<string | undefined> {
+    if (!this.client) return undefined;
+    try {
+      // Use message-resource API to download user-sent images
+      // The imageKey from the message is used as file_key
+      const res = await this.client.im.messageResource.get({
+        params: { type: 'image' },
+        path: { message_id: messageId, file_key: imageKey },
+      });
+      // Read stream and convert to base64
+      const chunks: Buffer[] = [];
+      const stream = res.getReadableStream();
+      for await (const chunk of stream) {
+        chunks.push(Buffer.from(chunk));
+      }
+      const buffer = Buffer.concat(chunks);
+      const base64 = buffer.toString('base64');
+      logger.info({ imageKey, messageId, size: buffer.length }, 'Feishu image downloaded');
+
+      return base64;
+    } catch (err) {
+      logger.error({ imageKey, messageId, err }, 'Failed to download Feishu image');
+    }
+    return undefined;
   }
 
   private async resolveSenderName(openId: string): Promise<string> {

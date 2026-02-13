@@ -41,6 +41,7 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
+  imageBase64?: string;
 }
 
 export interface ContainerOutput {
@@ -157,6 +158,33 @@ function buildVolumeMounts(
     containerPath: '/workspace/ipc',
     readonly: false,
   });
+
+  // Environment file directory (workaround for Apple Container -i env var bug)
+  // Only expose specific auth variables needed by Claude Code, not the entire .env
+  const envDir = path.join(DATA_DIR, 'env');
+  fs.mkdirSync(envDir, { recursive: true });
+  const envFile = path.join(projectRoot, '.env');
+  if (fs.existsSync(envFile)) {
+    const envContent = fs.readFileSync(envFile, 'utf-8');
+    const allowedVars = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL'];
+    const filteredLines = envContent.split('\n').filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) return false;
+      return allowedVars.some((v) => trimmed.startsWith(`${v}=`));
+    });
+
+    if (filteredLines.length > 0) {
+      fs.writeFileSync(
+        path.join(envDir, 'env'),
+        filteredLines.join('\n') + '\n',
+      );
+      mounts.push({
+        hostPath: envDir,
+        containerPath: '/workspace/env-dir',
+        readonly: true,
+      });
+    }
+  }
 
   // Mount agent-runner source from host — recompiled on container startup.
   // Bypasses Apple Container's sticky build cache for code changes.

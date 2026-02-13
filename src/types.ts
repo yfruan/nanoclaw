@@ -52,6 +52,8 @@ export interface NewMessage {
   timestamp: string;
   chat_type?: 'private' | 'group'; // Feishu chat type
   is_from_me?: boolean;
+  imageBase64?: string; // Base64 encoded image for vision
+  imageKey?: string; // Feishu image key for downloading
 }
 
 export interface ScheduledTask {

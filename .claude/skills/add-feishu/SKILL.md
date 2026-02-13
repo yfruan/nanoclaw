@@ -11,6 +11,7 @@ This skill adds Feishu (飞书/Lark) support to NanoClaw. Features:
 - **Rich text support** - Posts, images, files, media
 - **Self-registration** - Users can register via `/register` command
 - **Groups and DMs** - Supports both chat types
+- **Image Vision** - Claude Agent can analyze images sent by users
 
 ## Prerequisites
 
@@ -33,6 +34,7 @@ Tell the user:
 >    - `im:message:send_as_bot` - Send as bot
 >    - `contact:user.base:readonly` - Read user info
 >    - `im.chat:readonly` - Read chat info
+>    - `im:resource:download` - Download images/files (for image vision)
 > 4. **Event Subscriptions**: Subscribe to `im.message.receive_v1`
 > 5. Set connection mode to **WebSocket** (not callback URL)
 > 6. Get **App ID** and **App Secret** from Credentials page
@@ -64,6 +66,8 @@ export interface NewMessage {
   timestamp: string;
   chat_type?: 'private' | 'group'; // Feishu chat type
   is_from_me?: boolean;
+  imageBase64?: string; // Base64 encoded image for vision
+  imageKey?: string; // Feishu image key for downloading
 }
 ```
 
@@ -355,10 +359,13 @@ export class FeishuChannel implements Channel {
       storeFeishuMessageEvent(event, chatId, false, senderName);
     }
 
-    const { content, mediaInfo } = this.parseMessageContent(
-      event.message.content,
-      event.message.message_type,
-    );
+    // Parse content and download image if present
+    const { content, mediaInfo, imageKey, imageBase64 } =
+      await this.parseMessageContent(
+        event.message.content,
+        event.message.message_type,
+        event.message.message_id,
+      );
     let msgContent = mediaInfo ? `${content} ${mediaInfo}` : content;
 
     const trimmedContent = msgContent.trim().toLowerCase();
@@ -377,6 +384,8 @@ export class FeishuChannel implements Channel {
       content: msgContent,
       timestamp,
       chat_type: chatType,
+      imageBase64,
+      imageKey,
     };
 
     await this.onMessageCallback(chatId, newMessage);
@@ -386,19 +395,64 @@ export class FeishuChannel implements Channel {
     }
   }
 
-  private parseMessageContent(
+  private async parseMessageContent(
     content: string,
     messageType: string,
-  ): { content: string; mediaInfo?: string } {
+    messageId?: string,
+  ): Promise<{ content: string; mediaInfo?: string; imageKey?: string; imageBase64?: string }> {
     try {
       const parsed = JSON.parse(content);
       switch (messageType) {
         case 'text':
           return { content: parsed.text || '' };
-        case 'post':
-          return { content: '[Rich Text]' };
-        case 'image':
+        case 'post': {
+          // Parse rich text post - extract text and images
+          let text = parsed.title || '';
+          let imageKey: string | undefined;
+          let imageBase64: string | undefined;
+
+          // Parse content array (2D array of elements)
+          if (parsed.content && Array.isArray(parsed.content)) {
+            for (const row of parsed.content) {
+              if (Array.isArray(row)) {
+                for (const elem of row) {
+                  if (elem.tag === 'text' && elem.text) {
+                    text += (text ? ' ' : '') + elem.text;
+                  } else if (elem.tag === 'img' && elem.image_key && messageId) {
+                    const key = elem.image_key as string;
+                    imageKey = key;
+                    // Download first image found
+                    imageBase64 = await this.downloadImageAsBase64(key, messageId);
+                  }
+                }
+              }
+            }
+          }
+
+          if (imageKey) {
+            return {
+              content: text || '[Rich Text with image]',
+              mediaInfo: 'image',
+              imageKey,
+              imageBase64,
+            };
+          }
+          return { content: text || '[Rich Text]' };
+        }
+        case 'image': {
+          const imageKey = parsed.image_key;
+          if (imageKey && messageId) {
+            // Download image and convert to base64 for vision
+            const base64 = await this.downloadImageAsBase64(imageKey, messageId);
+            return {
+              content: '<media:image>',
+              mediaInfo: 'image',
+              imageKey,
+              imageBase64: base64,
+            };
+          }
           return { content: '<media:image>', mediaInfo: 'image' };
+        }
         case 'file':
           return { content: '<media:document>', mediaInfo: 'file' };
         case 'audio':
@@ -413,6 +467,30 @@ export class FeishuChannel implements Channel {
     } catch {
       return { content };
     }
+  }
+
+  private async downloadImageAsBase64(imageKey: string, messageId: string): Promise<string | undefined> {
+    if (!this.client) return undefined;
+    try {
+      // Use message-resource API to download user-sent images
+      const res = await this.client.im.messageResource.get({
+        params: { type: 'image' },
+        path: { message_id: messageId, file_key: imageKey },
+      });
+      // Read stream and convert to base64
+      const chunks: Buffer[] = [];
+      const stream = res.getReadableStream();
+      for await (const chunk of stream) {
+        chunks.push(Buffer.from(chunk));
+      }
+      const buffer = Buffer.concat(chunks);
+      const base64 = buffer.toString('base64');
+      logger.info({ imageKey, messageId, size: buffer.length }, 'Feishu image downloaded');
+      return base64;
+    } catch (err) {
+      logger.error({ imageKey, messageId, err }, 'Failed to download Feishu image');
+    }
+    return undefined;
   }
 
   private async resolveSenderName(openId: string): Promise<string> {
@@ -733,6 +811,11 @@ async function handleRealtimeMessage(msg: NewMessage): Promise<void> {
   }
 
   queue.enqueueMessageCheck(msg.chat_jid);
+
+  // Store imageBase64 in queue for vision support
+  if (msg.imageBase64) {
+    queue.setPendingImage(msg.chat_jid, msg.imageBase64);
+  }
 }
 
 // In main():
@@ -772,6 +855,171 @@ MESSENGER=feishu
 
 # Sync to container
 cp .env data/env/env
+```
+
+### Step 8: Update router.ts for Image Support
+
+Add imageBase64 support to message formatting in `src/router.ts`:
+
+```typescript
+export function formatMessages(messages: NewMessage[]): string {
+  const lines = messages.map((m) => {
+    let content = escapeXml(m.content);
+    // Add image as base64 if present
+    if (m.imageBase64) {
+      content += `\n<image>${m.imageBase64}</image>`;
+    }
+    return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${content}</message>`;
+  });
+  return `<messages>\n${lines.join('\n')}\n</messages>`;
+}
+```
+
+### Step 9: Add Image Vision Support
+
+To enable Claude Agent to analyze images sent by users, update these files:
+
+#### 8.1 Update `src/container-runner.ts` - Add imageBase64 to ContainerInput
+
+```typescript
+export interface ContainerInput {
+  prompt: string;
+  sessionId?: string;
+  groupFolder: string;
+  chatJid: string;
+  isMain: boolean;
+  isScheduledTask?: boolean;
+  imageBase64?: string;
+}
+```
+
+#### 8.2 Update `src/group-queue.ts` - Add pending image storage
+
+```typescript
+export class GroupQueue {
+  // ... existing code ...
+
+  // Store pending imageBase64 per chatJid for vision support
+  private pendingImageBase64 = new Map<string, string>();
+
+  // Add these methods:
+  setPendingImage(groupJid: string, imageBase64: string): void {
+    this.pendingImageBase64.set(groupJid, imageBase64);
+  }
+
+  getAndClearPendingImage(groupJid: string): string | undefined {
+    const img = this.pendingImageBase64.get(groupJid);
+    this.pendingImageBase64.delete(groupJid);
+    return img;
+  }
+}
+```
+
+#### 8.3 Update `src/index.ts` - Pass image to agent
+
+In `handleRealtimeMessage` (or where `queue.enqueueMessageCheck` is called):
+
+```typescript
+// Store imageBase64 in queue for vision support
+if (msg.imageBase64) {
+  queue.setPendingImage(msg.chat_jid, msg.imageBase64);
+}
+```
+
+In `processGroupMessages`:
+
+```typescript
+// Get imageBase64 from queue (set when message with image arrived)
+const imageBase64 = queue.getAndClearPendingImage(chatJid);
+```
+
+Pass to `runAgent`:
+
+```typescript
+const output = await runAgent(group, prompt, chatJid, async (result) => {
+  // ...
+}, imageBase64);
+```
+
+Update `runAgent` function signature:
+
+```typescript
+async function runAgent(
+  group: RegisteredGroup,
+  prompt: string,
+  chatJid: string,
+  onOutput?: (output: ContainerOutput) => Promise<void>,
+  imageBase64?: string,
+): Promise<'success' | 'error'> {
+```
+
+And pass to `runContainerAgent`:
+
+```typescript
+const output = await runContainerAgent(
+  group,
+  {
+    prompt,
+    sessionId,
+    groupFolder: group.folder,
+    chatJid,
+    isMain,
+    imageBase64: imageBase64,
+  },
+  // ...
+);
+```
+
+#### 8.4 Update container/agent-runner/src/index.ts
+
+Update `ContainerInput` interface and `MessageStream.push` to handle image content:
+
+```typescript
+interface ContainerInput {
+  prompt: string;
+  sessionId?: string;
+  groupFolder: string;
+  chatJid: string;
+  isMain: boolean;
+  isScheduledTask?: boolean;
+  imageBase64?: string;
+}
+
+class MessageStream {
+  push(text: string, imageBase64?: string): void {
+    let content: any;
+    if (imageBase64) {
+      const mediaType = this.detectMediaType(imageBase64);
+      content = [
+        { type: 'text', text },
+        { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } }
+      ];
+    } else {
+      content = text;
+    }
+    this.queue.push({
+      type: 'user',
+      message: { role: 'user', content },
+      parent_tool_use_id: null,
+      session_id: '',
+    });
+    this.waiting?.();
+  }
+
+  private detectMediaType(base64: string): string {
+    if (base64.startsWith('/9j/')) return 'image/jpeg';
+    if (base64.startsWith('iVBOR')) return 'image/png';
+    if (base64.startsWith('R0lGO')) return 'image/gif';
+    if (base64.startsWith('UklGR')) return 'image/webp';
+    return 'image/jpeg';
+  }
+}
+```
+
+Then in `runQuery`:
+
+```typescript
+stream.push(prompt, containerInput.imageBase64);
 ```
 
 ## Chat ID Formats

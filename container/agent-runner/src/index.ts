@@ -27,6 +27,7 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
+  imageBase64?: string; // Base64 encoded image for vision
 }
 
 interface ContainerOutput {
@@ -49,7 +50,7 @@ interface SessionsIndex {
 
 interface SDKUserMessage {
   type: 'user';
-  message: { role: 'user'; content: string };
+  message: { role: 'user'; content: any; };
   parent_tool_use_id: null;
   session_id: string;
 }
@@ -67,14 +68,38 @@ class MessageStream {
   private waiting: (() => void) | null = null;
   private done = false;
 
-  push(text: string): void {
+  push(text: string, imageBase64?: string): void {
+    // If imageBase64 is provided, format as vision content
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let content: any;
+
+    if (imageBase64) {
+      // Extract media type from base64 if possible (defaults to image/jpeg)
+      const mediaType = this.detectMediaType(imageBase64);
+      content = [
+        { type: 'text', text },
+        { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } }
+      ];
+    } else {
+      content = text;
+    }
+
     this.queue.push({
       type: 'user',
-      message: { role: 'user', content: text },
+      message: { role: 'user', content },
       parent_tool_use_id: null,
       session_id: '',
     });
     this.waiting?.();
+  }
+
+  private detectMediaType(base64: string): string {
+    // Check for common image format signatures
+    if (base64.startsWith('/9j/')) return 'image/jpeg';
+    if (base64.startsWith('iVBOR')) return 'image/png';
+    if (base64.startsWith('R0lGO')) return 'image/gif';
+    if (base64.startsWith('UklGR')) return 'image/webp';
+    return 'image/jpeg';
   }
 
   end(): void {
@@ -362,7 +387,8 @@ async function runQuery(
   resumeAt?: string,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
-  stream.push(prompt);
+  // Pass imageBase64 if present for vision support
+  stream.push(prompt, containerInput.imageBase64);
 
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;

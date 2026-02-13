@@ -10,9 +10,14 @@ export function escapeXml(s: string): string {
 }
 
 export function formatMessages(messages: NewMessage[]): string {
-  const lines = messages.map((m) =>
-    `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(m.content)}</message>`,
-  );
+  const lines = messages.map((m) => {
+    let content = escapeXml(m.content);
+    // Add image as base64 if present
+    if (m.imageBase64) {
+      content += `\n<image>${m.imageBase64}</image>`;
+    }
+    return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${content}</message>`;
+  });
   return `<messages>\n${lines.join('\n')}\n</messages>`;
 }
 
