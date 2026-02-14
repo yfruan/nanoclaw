@@ -32,7 +32,10 @@ export class GroupQueue {
     null;
   private shuttingDown = false;
   // Store pending imageBase64 per chatJid for vision support
-  private pendingImageBase64 = new Map<string, string>();
+  // Includes timestamp for 60-second expiry window
+  private pendingImageBase64 = new Map<string, { base64: string; timestamp: number }>();
+  // Pending image expires after 60 seconds
+  private static readonly PENDING_IMAGE_TIMEOUT = 60000;
 
   private getGroup(groupJid: string): GroupState {
     let state = this.groups.get(groupJid);
@@ -82,15 +85,24 @@ export class GroupQueue {
   }
 
   // Store pending imageBase64 for a chat (for vision support)
+  // Image is valid for 60 seconds
   setPendingImage(groupJid: string, imageBase64: string): void {
-    this.pendingImageBase64.set(groupJid, imageBase64);
+    this.pendingImageBase64.set(groupJid, {
+      base64: imageBase64,
+      timestamp: Date.now(),
+    });
   }
 
   // Get and clear pending imageBase64 for a chat
+  // Returns undefined if expired (older than 60 seconds)
   getAndClearPendingImage(groupJid: string): string | undefined {
     const img = this.pendingImageBase64.get(groupJid);
+    if (!img) return undefined;
+
+    const isExpired = Date.now() - img.timestamp > GroupQueue.PENDING_IMAGE_TIMEOUT;
     this.pendingImageBase64.delete(groupJid);
-    return img;
+
+    return isExpired ? undefined : img.base64;
   }
 
   enqueueTask(groupJid: string, taskId: string, fn: () => Promise<void>): void {

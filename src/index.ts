@@ -537,7 +537,8 @@ async function handleRegisterCommand(
 
 async function handleRealtimeMessage(msg: NewMessage): Promise<void> {
   const group = registeredGroups[msg.chat_jid];
-  const content = msg.content.trim();
+  // Strip Feishu mention prefix (e.g., "@_user_1 ") before checking commands
+  const content = msg.content.replace(/^@\S+\s+/, '').trim();
   const lowerContent = content.toLowerCase();
 
   if (lowerContent === '/register' || lowerContent.startsWith('/register ')) {
