@@ -387,8 +387,23 @@ async function runQuery(
   resumeAt?: string,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
-  // Pass imageBase64 if present for vision support
-  stream.push(prompt, containerInput.imageBase64);
+
+  // Save image to file and use MiniMax MCP understand_image tool instead of built-in vision
+  let imagePath: string | undefined;
+  if (containerInput.imageBase64) {
+    const imageDir = '/workspace/ipc/images';
+    fs.mkdirSync(imageDir, { recursive: true });
+    imagePath = path.join(imageDir, `image-${Date.now()}.jpg`);
+    // Add file header for JPEG
+    const base64Data = containerInput.imageBase64.replace(/^data:image\/\w+;base64,/, '');
+    fs.writeFileSync(imagePath, Buffer.from(base64Data, 'base64'));
+    log(`Image saved to ${imagePath}`);
+    // Add image path to prompt and STRONGLY instruct agent to use MCP tool FIRST
+    prompt = `${prompt}\n\n<image_path>${imagePath}</image_path>\n\nIMPORTANT: You MUST use the mcp__minimax__understand_image tool to analyze this image. Read the image file at the path above and pass it to the tool. Do NOT use built-in vision.`;
+  }
+
+  // Push prompt without image (MCP tool will handle it)
+  stream.push(prompt);
 
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;
@@ -452,12 +467,13 @@ async function runQuery(
       allowedTools: [
         'Bash',
         'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
+        'WebFetch',
         'Task', 'TaskOutput', 'TaskStop',
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        'mcp__minimax__*'
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -471,6 +487,14 @@ async function runQuery(
             NANOCLAW_CHAT_JID: containerInput.chatJid,
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+          },
+        },
+        minimax: {
+          command: 'uvx',
+          args: ['minimax-coding-plan-mcp', '-y'],
+          env: {
+            MINIMAX_API_KEY: sdkEnv.MINIMAX_API_KEY || '',
+            MINIMAX_API_HOST: sdkEnv.MINIMAX_API_HOST || 'https://api.minimaxi.com',
           },
         },
       },
@@ -607,6 +631,20 @@ async function main(): Promise<void> {
       error: errorMessage
     });
     process.exit(1);
+  }
+
+  // Cleanup: Remove images directory on exit
+  const imageDir = '/workspace/ipc/images';
+  try {
+    if (fs.existsSync(imageDir)) {
+      const files = fs.readdirSync(imageDir);
+      for (const file of files) {
+        fs.unlinkSync(path.join(imageDir, file));
+      }
+      log(`Cleaned up ${files.length} images`);
+    }
+  } catch (err) {
+    log(`Failed to cleanup images: ${err}`);
   }
 }
 

@@ -184,15 +184,16 @@ export class FeishuChannel implements Channel {
       storeFeishuMessageEvent(event, chatId, false, senderName);
     }
 
-    // Parse content and download image if present
+    // Parse content and download image if present - WAIT for download to complete before triggering agent
     const { content, mediaInfo, imageKey, imageBase64 } =
       await this.parseMessageContent(
         event.message.content,
         event.message.message_type,
         event.message.message_id,
       );
-    let msgContent = mediaInfo ? `${content} ${mediaInfo}` : content;
 
+    // Build message content
+    let msgContent = mediaInfo ? `${content} ${mediaInfo}` : content;
     const trimmedContent = msgContent.trim().toLowerCase();
     if (
       trimmedContent === 'register' ||
@@ -201,6 +202,8 @@ export class FeishuChannel implements Channel {
       msgContent = '/' + msgContent;
     }
 
+    // Only trigger message processing after image is downloaded (if present)
+    // This ensures imageBase64 is available when the agent runs
     const newMessage: NewMessage = {
       id: event.message.message_id,
       chat_jid: chatId,
@@ -216,7 +219,9 @@ export class FeishuChannel implements Channel {
     await this.onMessageCallback(chatId, newMessage);
 
     // Also call realtime handler if registered (for /register handling)
+    // Only call after image is downloaded to ensure imageBase64 is available
     if (this.onRealtimeMessage) {
+      logger.info({ chatId, hasImage: !!imageBase64 }, 'Calling realtime handler');
       await this.onRealtimeMessage(newMessage);
     }
   }
