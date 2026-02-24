@@ -1,0 +1,19 @@
+skill: feishu
+version: 1.0.0
+description: "Feishu (Lark) Bot integration via @larksuiteoapi/node-sdk"
+core_version: 0.1.0
+adds:
+  - src/channels/feishu.ts
+modifies:
+  - src/index.ts
+  - src/config.ts
+  - src/types.ts
+structured:
+  npm_dependencies:
+    "@larksuiteoapi/node-sdk": "^1.59.0"
+  env_additions:
+    - FEISHU_APP_ID
+    - FEISHU_APP_SECRET
+conflicts: []
+depends: []
+test: "npm run build"
