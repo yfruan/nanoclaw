@@ -1,0 +1,18 @@
+skill: minimax-coding-plan-mcp
+version: 1.0.0
+description: "Add MiniMax MCP for image understanding in containers"
+core_version: 0.1.0
+adds: []
+modifies:
+  - container/Dockerfile
+  - container/agent-runner/src/index.ts
+  - groups/global/CLAUDE.md
+  - groups/main/CLAUDE.md
+structured:
+  npm_dependencies: {}
+  env_additions:
+    - MINIMAX_API_KEY
+    - MINIMAX_API_HOST
+conflicts: []
+depends: []
+test: "npm run build"
