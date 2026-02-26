@@ -39,8 +39,8 @@ interface FeishuChannelOpts {
  * Ensure message content has trigger word (@${ASSISTANT_NAME}) if bot is mentioned.
  */
 function ensureTriggerWord(content: string, hasMention: boolean): string {
-  if (hasMention && !content.toLowerCase().includes('@${ASSISTANT_NAME}')) {
-    return '@${ASSISTANT_NAME} ' + content.trim();
+  if (hasMention && !content.toLowerCase().includes(`@${ASSISTANT_NAME}`)) {
+    return `@${ASSISTANT_NAME} ` + content.trim();
   }
   return content;
 }
@@ -197,25 +197,40 @@ export class FeishuChannel implements Channel {
       msgContent = `${msgContent}\n\n<image_path>${imagePath}</image_path>`;
     }
 
-    // Ensure trigger word for @mentions
+    // Check for /register command - handle it directly and return early
+    const originalTrimmedContent = content.trim().toLowerCase();
+    const isRegisterCommand = originalTrimmedContent.includes('/register');
+
+    if (isRegisterCommand) {
+      // Extract folder name if present (e.g., "@_user_1 /register FinAssistant" -> "/register FinAssistant")
+      const match = originalTrimmedContent.match(/\/register\s*(.+)?$/);
+      const folderName = match?.[1]?.trim();
+      const registerContent = folderName ? `/register ${folderName}` : '/register';
+
+      // Call realtime handler to process registration
+      if (this.onRealtimeMessage) {
+        await this.onRealtimeMessage({
+          id: event.message.message_id,
+          chat_jid: chatId,
+          sender: senderOpenId || 'unknown',
+          sender_name: senderName,
+          content: registerContent,
+          timestamp,
+          chat_type: chatType,
+        });
+      }
+      return; // Done, don't process further
+    }
+
+    // Normal message handling - ensure trigger word for @mentions
     msgContent = ensureTriggerWord(msgContent, mentionsBot);
 
-    // Only store message and trigger callbacks AFTER image is downloaded
-    // This ensures imagePath is available when the agent runs
+    // Store message for registered groups
     if (this.registeredGroups()[chatId]) {
       storeFeishuMessageEvent(event, chatId, false, senderName);
     }
 
-    const trimmedContent = msgContent.trim().toLowerCase();
-    if (
-      trimmedContent === 'register' ||
-      trimmedContent.startsWith('register ')
-    ) {
-      msgContent = '/' + msgContent;
-    }
-
-    // Only trigger message processing after image is downloaded (if present)
-    // This ensures imagePath is available when the agent runs
+    // Build and send message to agent
     const newMessage: NewMessage = {
       id: event.message.message_id,
       chat_jid: chatId,
@@ -227,13 +242,6 @@ export class FeishuChannel implements Channel {
     };
 
     await this.onMessageCallback(chatId, newMessage);
-
-    // Also call realtime handler if registered (for /register handling)
-    // Only call after image is downloaded to ensure imagePath is available
-    if (this.onRealtimeMessage) {
-      logger.info({ chatId, hasImage: !!imagePath }, 'Calling realtime handler');
-      await this.onRealtimeMessage(newMessage);
-    }
   }
 
   private async parseMessageContent(
