@@ -147,14 +147,33 @@ function buildVolumeMounts(
   }
 
   // Sync skills from container/skills/ into each group's .claude/skills/
+  // Supports per-group skills: root-level dirs are global, subdirs named after
+  // group folder are group-specific (e.g., container/skills/main/custom-skill/)
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');
   if (fs.existsSync(skillsSrc)) {
-    for (const skillDir of fs.readdirSync(skillsSrc)) {
-      const srcDir = path.join(skillsSrc, skillDir);
+    const entries = fs.readdirSync(skillsSrc);
+
+    // 1. First copy global skills (root-level dirs, not group-specific)
+    for (const entry of entries) {
+      const srcDir = path.join(skillsSrc, entry);
+      // Skip non-directories and group-specific subdirs
       if (!fs.statSync(srcDir).isDirectory()) continue;
-      const dstDir = path.join(skillsDst, skillDir);
+      if (entry === group.folder) continue;
+
+      const dstDir = path.join(skillsDst, entry);
       fs.cpSync(srcDir, dstDir, { recursive: true });
+    }
+
+    // 2. Then copy group-specific skills (subdir named after group folder)
+    const groupSkillDir = path.join(skillsSrc, group.folder);
+    if (fs.existsSync(groupSkillDir)) {
+      for (const skillDir of fs.readdirSync(groupSkillDir)) {
+        const srcDir = path.join(groupSkillDir, skillDir);
+        if (!fs.statSync(srcDir).isDirectory()) continue;
+        const dstDir = path.join(skillsDst, skillDir);
+        fs.cpSync(srcDir, dstDir, { recursive: true });
+      }
     }
   }
   mounts.push({
