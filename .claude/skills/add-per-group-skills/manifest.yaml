@@ -1,0 +1,13 @@
+skill: per-group-skills
+version: 1.0.0
+description: "Support per-group skills - global skills at root, group-specific skills in subdirectories named after group folder"
+core_version: 0.1.0
+adds: []
+modifies:
+  - src/container-runner.ts
+structured:
+  npm_dependencies: {}
+  env_additions: []
+conflicts: []
+depends: []
+test: "npm run build"
