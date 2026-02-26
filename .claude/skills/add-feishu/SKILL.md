@@ -109,8 +109,14 @@ Tell the user:
 
 > In Feishu:
 > 1. Add the bot to a group or start a DM
-> 2. Send `/register` to register this chat
-> 3. The bot will respond with confirmation
+> 2. For groups: Send `@{bot_name} /register` (e.g., `@awu /register` or `@awu /register folder-name`)
+>    - Note: Feishu converts @mention to @_user_X, so the bot will see `@_user_X /register`
+> 3. For private chat: Send `/register` or `@bot_name /register`
+> 4. The bot will respond with confirmation "✅ 已注册！会话: {folder}"
+
+The `/register` command extracts the folder name from the message:
+- `@awu /register` → folder: "main" (for private) or "chat-{timestamp}" (for groups)
+- `@awu /register my-folder` → folder: "my-folder"
 
 Wait for the user to register.
 
@@ -122,7 +128,7 @@ Tell the user:
 
 > Send a message in your registered Feishu channel:
 > - For private chat: Any message works
-> - For group: @mention the bot
+> - For group: @mention the bot (e.g., `@awu hello`)
 >
 > The bot should respond within a few seconds.
 
