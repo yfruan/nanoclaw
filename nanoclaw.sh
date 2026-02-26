@@ -35,7 +35,12 @@ stop() {
 
     # 清理残留容器
     echo "Cleaning up orphaned containers..."
-    docker ps -a --format "{{.Names}}" | grep "nanoclaw-" | xargs -r docker rm -f 2>/dev/null || true
+    for container_id in $(container ls --quiet 2>/dev/null); do
+        if [ "$container_id" != "buildkit" ]; then
+            echo "Stopping container: $container_id"
+            container stop "$container_id" 2>/dev/null || true
+        fi
+    done
 }
 
 restart() {
