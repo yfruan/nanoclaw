@@ -539,7 +539,6 @@ async function main(): Promise<void> {
     },
   };
 
-<<<<<<< HEAD
   // Create and connect all registered channels.
   // Each channel self-registers via the barrel import above.
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
@@ -560,16 +559,6 @@ async function main(): Promise<void> {
     logger.fatal('No channels connected');
     process.exit(1);
   }
-=======
-  // Create and connect channels
-  const feishu = new FeishuChannel(channelOpts);
-  channels.push(feishu);
-  await feishu.connect();
-
-  whatsapp = new WhatsAppChannel(channelOpts);
-  channels.push(whatsapp);
-  // await whatsapp.connect();
->>>>>>> fe0abf0 (feat: add Feishu channel support)
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
