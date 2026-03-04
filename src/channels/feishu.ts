@@ -195,6 +195,12 @@ export class FeishuChannel implements Channel {
     let msgContent = mediaInfo ? `${content} ${mediaInfo}` : content;
     if (imagePath) {
       msgContent = `${msgContent}\n\n<image_path>${imagePath}</image_path>`;
+      // For fin-assistant group, add trigger keyword to activate skill when only image is sent
+      const isImageOnly = content?.trim() === '<media:image>' || content?.trim() === 'image' || !content?.trim();
+      if (groupFolder === 'fin-assistant' && isImageOnly) {
+        // Add trigger keyword to activate etf-assistant skill and explicit instruction to save
+        msgContent = `<image_path>${imagePath}</image_path>\n\n请使用 etf-assistant skill 识别这张图片，提取基金代码、持有份额和成本单价，然后调用 'etf-assistant add <基金代码> <份额> <成本价> -s' 命令将识别结果保存到 portfolio.json`;
+      }
     }
 
     // Check for /register command - handle it directly and return early
