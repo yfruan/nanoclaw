@@ -248,13 +248,6 @@ export class FeishuChannel implements Channel {
     };
 
     await this.onMessageCallback(chatId, newMessage);
-
-    // Also call realtime handler if registered (for /register handling)
-    // Only call after image is downloaded to ensure imagePath is available
-    if (this.onRealtimeMessage) {
-      logger.info({ chatId, hasImage: !!imagePath }, 'Calling realtime handler');
-      await this.onRealtimeMessage(newMessage);
-    }
   }
 
   private async parseMessageContent(
