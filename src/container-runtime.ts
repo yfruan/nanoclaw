@@ -103,8 +103,9 @@ export function ensureContainerRuntimeRunning(): void {
 /** Kill orphaned NanoClaw containers from previous runs. */
 export function cleanupOrphans(): void {
   try {
+    // Use -q for quiet mode (ID only) - works for both Docker and Apple Container
     const output = execSync(
-      `${CONTAINER_RUNTIME_BIN} list --format '{{.ID}}'`,
+      `${CONTAINER_RUNTIME_BIN} list -q`,
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
     const orphans = output.trim().split('\n').filter(Boolean);
