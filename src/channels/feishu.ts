@@ -5,6 +5,7 @@ import path from 'path';
 import { ASSISTANT_NAME, DATA_DIR, FEISHU_APP_ID, FEISHU_APP_SECRET } from '../config.js';
 import { storeChatMetadata, storeMessageDirect } from '../db.js';
 import { logger } from '../logger.js';
+import { registerChannel, ChannelOpts } from './registry.js';
 
 // --- Feishu-specific types ---
 
@@ -497,3 +498,13 @@ function storeFeishuMessageEvent(
     resolvedName,
   );
 }
+
+// --- Channel Registration ---
+
+registerChannel('feishu', (opts: ChannelOpts) => {
+  if (!FEISHU_APP_ID || !FEISHU_APP_SECRET) {
+    logger.warn('Feishu: FEISHU_APP_ID or FEISHU_APP_SECRET not set');
+    return null;
+  }
+  return new FeishuChannel(opts);
+});
