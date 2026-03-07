@@ -242,6 +242,7 @@ function readSecrets(): Record<string, string> {
     'ANTHROPIC_AUTH_TOKEN',
     'MINIMAX_API_KEY',
     'MINIMAX_API_HOST',
+    'OLLAMA_HOST',
   ]);
 }
 
