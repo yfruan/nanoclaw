@@ -52,7 +52,7 @@ WORKDIR /app
 COPY agent-runner/package*.json ./
 
 # Install dependencies
-RUN npm install
+RUN npm install --registry https://registry.npmmirror.com 2>/dev/null
 
 # Copy source code
 COPY agent-runner/ ./
