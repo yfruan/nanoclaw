@@ -57,6 +57,13 @@ export class FeishuChannel implements Channel {
   private onRealtimeMessage?: (msg: NewMessage) => Promise<void>;
   private botOpenId: string | null = null;
   private connected = false;
+  // Health check
+  private healthCheckInterval: NodeJS.Timeout | null = null;
+  private reconnectAttempts = 0;
+  private isReconnecting = false;
+  private readonly maxReconnectAttempts = 5;
+  private readonly healthCheckIntervalMs = 30000;
+  private readonly maxReconnectDelayMs = 60000;
 
   constructor(opts: FeishuChannelOpts) {
     this.registeredGroups = opts.registeredGroups;
@@ -102,6 +109,7 @@ export class FeishuChannel implements Channel {
 
     await this.setupWebSocket();
     this.connected = true;
+    this.startHealthCheck();
   }
 
   private async setupWebSocket(): Promise<void> {
@@ -147,6 +155,94 @@ export class FeishuChannel implements Channel {
       }
     });
   }
+
+  // --- Health Check ---
+
+  private startHealthCheck(): void {
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+    }
+    this.healthCheckInterval = setInterval(async () => {
+      await this.checkConnectionHealth();
+    }, this.healthCheckIntervalMs);
+    logger.info({ intervalMs: this.healthCheckIntervalMs }, 'Feishu health check started');
+  }
+
+  private async checkConnectionHealth(): Promise<void> {
+    if (this.isReconnecting) {
+      return;
+    }
+
+    try {
+      // Ping the API to verify actual connection is working
+      await this.ping();
+      // Connection is healthy
+      return;
+    } catch {
+      // Ping failed, connection is likely broken
+    }
+
+    logger.warn('Feishu connection unhealthy, attempting reconnect');
+    await this.reconnect();
+  }
+
+  private async ping(): Promise<void> {
+    if (!this.client) {
+      throw new Error('No client');
+    }
+    const response = await (this.client as unknown as {
+      request: (opts: { method: string; url: string }) => Promise<{
+        code: number;
+      }>;
+    }).request({
+      method: 'GET',
+      url: '/open-apis/bot/v3/info',
+    });
+    if (response.code !== 0) {
+      throw new Error(`Ping failed with code: ${response.code}`);
+    }
+  }
+
+  private async reconnect(): Promise<void> {
+    if (this.isReconnecting) {
+      return;
+    }
+
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      logger.error('Max reconnection attempts reached, giving up');
+      return;
+    }
+
+    this.isReconnecting = true;
+    this.reconnectAttempts++;
+
+    try {
+      // Close existing connection
+      if (this.wsClient) {
+        this.wsClient.close();
+      }
+      this.connected = false;
+
+      // Exponential backoff: 5s, 10s, 20s, 40s, 60s (capped)
+      const delay = Math.min(
+        5000 * Math.pow(2, this.reconnectAttempts - 1),
+        this.maxReconnectDelayMs,
+      );
+      logger.info({ attempt: this.reconnectAttempts, delayMs: delay }, 'Reconnecting to Feishu');
+      await new Promise((resolve) => setTimeout(resolve, delay));
+
+      // Reconnect
+      await this.connect();
+      this.reconnectAttempts = 0;
+      this.isReconnecting = false;
+      logger.info('Feishu reconnected successfully');
+    } catch (err) {
+      this.isReconnecting = false;
+      logger.error({ err, attempt: this.reconnectAttempts }, 'Feishu reconnection failed');
+    }
+  }
+
+  // --- Message Handling ---
 
   private async handleMessageEvent(event: {
     message: FeishuMessage;
@@ -199,8 +295,9 @@ export class FeishuChannel implements Channel {
       // For fin-assistant group, add trigger keyword to activate skill when only image is sent
       const isImageOnly = content?.trim() === '<media:image>' || content?.trim() === 'image' || !content?.trim();
       if (groupFolder === 'fin-assistant' && isImageOnly) {
-        // Add trigger keyword to activate etf-assistant skill and explicit instruction to save
-        msgContent = `<image_path>${imagePath}</image_path>\n\n请使用 etf-assistant skill 识别这张图片，提取基金代码、持有份额和成本单价，然后调用 'etf-assistant add <基金代码> <份额> <成本价> -s' 命令将识别结果保存到 portfolio.json`;
+        // CRITICAL: 必须执行 etf-assistant add 命令，该命令会从 API 获取真实基金名称
+        // 禁止自己输出任何识别结果，必须使用命令返回的真实名称
+        msgContent = `<image_path>${imagePath}</image_path>\n\n用 vision 识别图片获取基金代码、份额、成本价，然后执行命令: etf-assistant add <代码> <份额> <成本价> -s\n重要：必须执行命令并返回命令输出，不要自己输出识别结果！`;
       }
     }
 
@@ -424,6 +521,11 @@ export class FeishuChannel implements Channel {
   }
 
   async disconnect(): Promise<void> {
+    // Stop health check first to prevent reconnection during shutdown
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = null;
+    }
     this.connected = false;
     if (this.wsClient) {
       this.wsClient.close();
