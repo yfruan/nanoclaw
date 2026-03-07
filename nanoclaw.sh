@@ -63,6 +63,7 @@ stop() {
     echo "Cleaning up stale dev processes..."
     pkill -f "tsx.*src/index" 2>/dev/null || true
     pkill -f "node.*src/index\.ts" 2>/dev/null || true
+    pkill -f "node dist/index.js" 2>/dev/null || true
 
     # 清理残留容器
     echo "Cleaning up orphaned containers..."
