@@ -32,6 +32,19 @@ ETF联接基金（如 002610）使用对应场内ETF实时行情计算：
 - 估值公式：联接基金净值 = 成本价 × (1 + ETF涨跌率)
 - 添加持仓时使用 `-s` 参数
 
+### 4. 模型选择指南
+
+**使用 Ollama (mcp__ollama__ollama_generate) 的场景：**
+- 简单查询：行情 (`price`)、基金信息 (`info`)
+- 配置读取：`dca list`、`schedule list`
+- 配置修改确认：`dca remove`、`schedule remove`
+
+**使用默认 Claude 模型的场景：**
+- 持仓管理：`list`、`add`、`remove`
+- 分析计算：`summary`、`compare`、`calc`
+- 复杂操作：`dca add`、`dca check`、`schedule add`
+- 任何需要推理或多步骤的任务
+
 ## 功能
 
 ### 基础功能
