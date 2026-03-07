@@ -433,7 +433,8 @@ async function runQuery(
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
-        'mcp__minimax__*'
+        'mcp__minimax__*',
+        'mcp__ollama__*'
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -456,6 +457,10 @@ async function runQuery(
             MINIMAX_API_KEY: sdkEnv.MINIMAX_API_KEY || '',
             MINIMAX_API_HOST: sdkEnv.MINIMAX_API_HOST || 'https://api.minimaxi.com',
           },
+        },
+        ollama: {
+          command: 'node',
+          args: [path.join(path.dirname(mcpServerPath), 'ollama-mcp-stdio.js')],
         },
       },
       hooks: {
