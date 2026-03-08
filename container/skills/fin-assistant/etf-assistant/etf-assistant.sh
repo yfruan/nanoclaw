@@ -103,7 +103,15 @@ lt() {
 # 持仓数据文件路径 (可通过环境变量覆盖)
 # 获取脚本所在目录的根目录
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
-PORTFOLIO_FILE="${PORTFOLIO_FILE:-$SCRIPT_DIR/groups/fin-assistant/portfolio.json}"
+
+# 根据 GROUP_NAME 选择数据路径
+# 如果是 fin-assistant 群组（默认），使用 groups/fin-assistant/
+# 否则使用 /workspace/group/fin-assistant/ (挂载到对应群组的文件夹)
+if [ "$GROUP_NAME" = "fin-assistant" ] || [ -z "$GROUP_NAME" ]; then
+  PORTFOLIO_FILE="${PORTFOLIO_FILE:-$SCRIPT_DIR/groups/fin-assistant/portfolio.json}"
+else
+  PORTFOLIO_FILE="${PORTFOLIO_FILE:-/workspace/group/fin-assistant/portfolio.json}"
+fi
 
 # 获取ETF/基金代码对应的交易所
 get_secid() {
@@ -451,7 +459,11 @@ is_trading_day() {
     fi
 
     # 检查节假日
-    local holidays_file="$SCRIPT_DIR/../groups/fin-assistant/holidays.json"
+    if [ "$GROUP_NAME" = "fin-assistant" ] || [ -z "$GROUP_NAME" ]; then
+      local holidays_file="$SCRIPT_DIR/../groups/fin-assistant/holidays.json"
+    else
+      local holidays_file="/workspace/group/fin-assistant/holidays.json"
+    fi
     if [ -f "$holidays_file" ]; then
         local year
         year=$(echo "$date" | cut -d'-' -f1)
