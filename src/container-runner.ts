@@ -255,6 +255,10 @@ function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
+  // Extract group name from container name (format: nanoclaw-{group}-{timestamp})
+  const groupName = containerName.replace(/^nanoclaw-([a-zA-Z0-9-]+)-.*$/, '$1');
+  args.push('-e', `GROUP_NAME=${groupName}`);
+
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),
   // or when getuid is unavailable (native Windows without WSL).
