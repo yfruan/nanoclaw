@@ -4,12 +4,12 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
-ETF_ASSISTANT="$SCRIPT_DIR/container/skills/fin-assistant/etf-assistant/etf-assistant.sh"
-HOLIDAYS_FILE="$SCRIPT_DIR/groups/fin-assistant/holidays.json"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ETF_ASSISTANT="$SCRIPT_DIR/etf-assistant.sh"
+HOLIDAYS_FILE="$SCRIPT_DIR/holidays.json"
 
 # 默认 portfolio 路径（可通过环境变量覆盖）
-PORTFOLIO_FILE="${PORTFOLIO_FILE:-$SCRIPT_DIR/groups/fin-assistant/portfolio.json}"
+PORTFOLIO_FILE="${PORTFOLIO_FILE:-$SCRIPT_DIR/portfolio.json}"
 
 # 日志
 log() {
@@ -228,15 +228,59 @@ import json
 import sys
 import subprocess
 import os
+from datetime import datetime, timedelta
 
 dca_json = '''$dca_json'''
 today = '''$today'''
-script_dir = os.path.dirname(os.path.realpath(__file__))
+portfolio_file = '''$PORTFOLIO_FILE'''
+script_dir = '''$SCRIPT_DIR'''
 
 try:
     data = json.loads(dca_json)
 except:
     sys.exit(0)
+
+# 计算下一个交易日
+def get_next_trading_day(current_date_str, frequency):
+    from datetime import datetime, timedelta
+    current = datetime.strptime(current_date_str, '%Y-%m-%d')
+    days_to_add = 1 if frequency == 'daily' else (7 if frequency == 'weekly' else 30)
+
+    while days_to_add <= 30:
+        next_date = current + timedelta(days=days_to_add)
+        day_of_week = next_date.weekday()
+        # 0=周一, 6=周日 - 跳过周末
+        if day_of_week < 5:
+            return next_date.strftime('%Y-%m-%d')
+        days_to_add += 1
+    return current_date_str
+
+# 读取节假日
+holidays = set()
+holidays_file = os.path.join(script_dir, 'holidays.json')
+if os.path.exists(holidays_file):
+    try:
+        with open(holidays_file, 'r') as f:
+            holidays_data = json.load(f)
+            year = today[:4]
+            if year in holidays_data:
+                holidays = set(holidays_data[year])
+    except:
+        pass
+
+# 更新 portfolio.json 中的 nextDate
+def update_next_date(code, new_next_date):
+    try:
+        with open(portfolio_file, 'r') as f:
+            portfolio = json.load(f)
+        if 'dca' in portfolio and code in portfolio['dca']:
+            portfolio['dca'][code]['nextDate'] = new_next_date
+            with open(portfolio_file, 'w') as f:
+                json.dump(portfolio, f, ensure_ascii=False, indent=2)
+            return True
+    except Exception as e:
+        print(f"更新nextDate失败: {e}")
+    return False
 
 for plan in data:
     code = plan.get('code', '')
@@ -259,6 +303,17 @@ for plan in data:
             print(f"{code} 定投成功")
         else:
             print(f"{code} 定投失败: {result.stdout[:100]}")
+
+        # 无论成功或失败，都更新下次执行日期
+        new_next = get_next_trading_day(today, frequency)
+        # 跳过节假日
+        while new_next in holidays:
+            from datetime import datetime
+            next_dt = datetime.strptime(new_next, '%Y-%m-%d') + timedelta(days=1)
+            new_next = next_dt.strftime('%Y-%m-%d')
+
+        update_next_date(code, new_next)
+        print(f"{code} 下次执行日期已更新: {new_next}")
 PYEOF
 
     log "定投检查完成"
