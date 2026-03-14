@@ -1,164 +1,338 @@
 ---
 name: etf-assistant
-description: "ETF 基金投资助理 - 基金截图识别、持仓管理、净值查询、定投计划、收益汇总"
+description: 'ETF基金投资助手。当用户发送基金截图时，调用 mcp__minimax__understand_image 识别并执行 add 命令。当用户问持仓、收益、行情时执行 list/summary/price 命令。当用户说定投时执行 dca add 命令。当用户说"每天X点执行定投"或"每天X点返回估值"时，执行 schedule 命令后必须调用 mcp__nanoclaw__schedule_task MCP 工具。不处理股票、期货、国债。'
 ---
 
-# ETF 基金投资助理
+# ETF 基金投资助手
 
-一个专业的 ETF 基金投资助手，帮助你管理 ETF 基金持仓、查询净值、设置定投、查看收益汇总。
+## 强制执行规则
 
-## 核心规则
+**你必须执行命令，不能询问用户。所有命令都支持覆盖已有数据。**
 
-### 1. 禁止直接读取 portfolio.json
+### 规则1：查询持仓/收益
+**触发条件**：用户问"今天收益多少"、"查看持仓"、"有什么基金"、"我的基金怎么样"、"基金赚了多少"、"总盈亏"
 
-禁止用 Python/任何方式直接读取 portfolio.json 来回答问题。必须通过执行命令获取数据。
-
-### 2. 图片识别
-
-当收到 `<image_path>` 标签时：
-
-1. **必须立即调用** `mcp__minimax__understand_image` 工具分析图片
-2. 如果不是基金截图，明确告知用户"这不是基金截图，无法识别"
-3. 提取基金信息后，调用 `add` 命令保存
-
-示例：
+**必须执行**：
 ```
-mcp__minimax__understand_image(image_source="<path_from_image_tag>", prompt="请先仔细分析这张图片：\n\n1. **首先判断**：这张图片是否是基金/ETF持仓截图（如天天基金、支付宝-基金、雪球基金、银行APP基金页面等）？\n   - 如果图片是其他内容（股票截图、理财账单、验证码、聊天记录、新闻等），请直接回复\"不是基金截图\"。\n\n2. **如果是基金截图**：请识别：基金名称、基金代码（6位数字）、持有份额、成本单价、持有金额、最新净值、持仓收益率、日涨跌")
-```
-
-### 3. ETF联接基金估值
-
-ETF联接基金（如 002610）使用对应场内ETF实时行情计算：
-- 估值公式：联接基金净值 = 成本价 × (1 + ETF涨跌率)
-- 添加持仓时使用 `-s` 参数
-
-### 4. 模型选择指南
-
-**使用 Ollama (mcp__ollama__ollama_generate) 的场景：**
-- 简单查询：行情 (`price`)、基金信息 (`info`)
-- 配置读取：`dca list`、`schedule list`
-- 配置修改确认：`dca remove`、`schedule remove`
-
-**使用默认 Claude 模型的场景：**
-- 持仓管理：`list`、`add`、`remove`
-- 分析计算：`summary`、`compare`、`calc`
-- 复杂操作：`dca add`、`dca check`、`schedule add`
-- 任何需要推理或多步骤的任务
-
-## 功能
-
-### 基础功能
-
-- 📊 ETF列表 - 常用ETF代码
-- 💰 实时行情 - 查询ETF/基金价格
-- 🔥 热门ETF - 推荐标的
-- 📈 对比分析 - 对比两只ETF
-
-### 持仓管理
-
-- 📋 持仓列表
-- 💵 收益汇总
-- ➕ 添加持仓
-- ➖ 卖出
-- 🧮 定投管理
-
-## 用户意图 → 命令映射
-
-| 用户意图 | 执行命令 |
-|---------|---------|
-| 查看持仓、收益情况 | `etf-assistant list` |
-| 询问某基金金额 | `etf-assistant list` |
-| 查询基金行情 | `etf-assistant price <code>` |
-| 基金基本信息 | `etf-assistant info <code>` |
-| 对比两只ETF | `etf-assistant compare <code1> <code2>` |
-| 添加定投 | `etf-assistant dca add <code> <amount> <frequency>` |
-| 查看定投 | `etf-assistant dca list` |
-| 取消定投 | `etf-assistant dca remove <code>` |
-| 定投计算 | `etf-assistant calc <code> <amount> <years>` |
-| 待确认成本 | `etf-assistant pending-update` |
-| 更新ETF代码 | `etf-assistant update-etf <code> <etf_code>` |
-| 设置定时任务 | `etf-assistant schedule add <描述> <类型> <cron>` |
-
-## 购买/卖出识别
-
-### 购买
-
-- 用户说"002610买了1000元"
-- 提取基金编号 + 金额
-- 执行 `etf-assistant add <code> <amount>`
-
-### 卖出
-
-- 用户说"002610卖了500份额"
-- 提取基金编号 + 数量（默认份额，指定 -v 按金额）
-
-## 更新ETF代码
-
-- 用户说"025732对应的ETF代码是159267"或"025732的ETF是159267"
-- 提取基金编号 + ETF代码
-- 执行 `etf-assistant update-etf <code> <etf_code>`
-- 执行 `etf-assistant remove <code> <数量>`
-
-## 命令格式
-
-```bash
-# 持仓
 etf-assistant list
+```
+
+**禁止行为**：
+- ❌ 询问"要查看持仓吗？"
+- ❌ 回复"让我查一下"但不执行命令
+- ❌ 从记忆或对话历史猜测数据
+- ❌ 用 Python/Read 读取 portfolio.json
+
+### 规则2：查询收益汇总
+**触发条件**：用户问"收益汇总"、"总收益"、"总体收益"
+
+**必须执行**：
+```
 etf-assistant summary
-etf-assistant add <code> <amount> [cost]
-etf-assistant add <code> <shares> <cost> -s  # 按份额添加
-etf-assistant remove <code> <shares>
-etf-assistant remove <code> <amount> -v
+```
 
-# 定投
-etf-assistant dca add <code> <amount> daily|weekly|monthly
+### 规则3：图片识别（最重要）
+**触发条件**：用户发送基金截图
+
+**必须按顺序执行全部3步**：
+
+**第1步：列出图片**
+```bash
+ls -la /workspace/ipc/images/
+```
+
+**第2步：识别图片（使用 MCP 工具）**
+```
+工具：mcp__minimax__understand_image
+参数：
+- image_source: /workspace/ipc/images/图片文件名
+- prompt: 这是天天基金/支付宝/雪球的基金持仓截图，请提取：基金代码、持有份额、成本价
+```
+
+**第3步：添加持仓（必须执行）**
+```
+etf-assistant add <基金代码> <持有份额> <成本价> -s
+```
+**说明**：-s 参数会覆盖已有同名基金的数据
+
+**禁止行为**：
+- ❌ 只分析图片但不执行 add 命令
+- ❌ 询问用户"要添加吗？"
+- ❌ 说"已识别出 XXX"但不加到系统
+- ❌ 说"我帮你记录下来"但不执行 add
+- ❌ 只告诉用户持仓信息但不添加到系统
+
+**ETF代码未找到时**：
+- 如果无法自动获取 ETF 对应的代码，添加持仓后必须告知用户
+- 用自然语言告诉用户："请问这只基金对应的ETF代码是多少？"
+
+### 规则4：查询行情
+**触发条件**：用户问某只基金的行情/净值/价格（如"023520 行情怎么样"、"110022 现在多少钱"、"查一下 510300"）
+
+**必须执行**：
+```
+etf-assistant price <基金代码>
+```
+
+**禁止行为**：
+- ❌ 告诉用户"需要查询"但不执行命令
+- ❌ 从记忆猜测行情数据
+
+### 规则5：查询基金信息
+**触发条件**：用户问某只基金的基本信息（如"023520 是什么基金"、"110022 类型"）
+
+**必须执行**：
+```
+etf-assistant info <基金代码>
+```
+
+### 规则6：买入/加仓
+**触发条件**：用户说"买入 XXX"、"加仓 XXX"、"持有 XXX"
+
+**必须执行**：
+```
+etf-assistant add <基金代码> <持有份额> <成本价> -s
+```
+或（按金额）
+```
+etf-assistant add <基金代码> <金额>
+```
+
+### 规则7：卖出基金
+**触发条件**：用户说"卖出XXX"、"清仓XXX"、"减仓XXX"
+
+**必须执行**（按份额）：
+```
+etf-assistant remove <基金代码> <份额>
+```
+或（按金额，-v 表示按金额）：
+```
+etf-assistant remove <基金代码> <金额> -v
+```
+
+**禁止行为**：
+- ❌ 询问"确认要卖出吗？"才执行
+- ❌ 说"好的"但不执行命令
+
+### 规则8：设置定投
+**触发条件**：用户说"设置定投"、"定投"、"每日定投"、"每周定投"
+
+**必须执行**：
+```
+etf-assistant dca add <基金代码> <金额> daily
+```
+或每周：
+```
+etf-assistant dca add <基金代码> <金额> weekly
+```
+
+### 规则9：设置ETF对应代码
+**触发条件**：用户说"设置ETF代码"、"绑定ETF"、"更新ETF代码"
+
+**必须执行**：
+```
+etf-assistant update-etf <基金代码> <ETF代码>
+```
+示例：`etf-assistant update-etf 023520 160000`
+
+### 规则10：创建定时任务（自动执行定投）
+**触发条件**：用户说"每天X点执行定投"（X可以是8、9、10等）、"设置定时定投"、"自动定投"
+
+**执行步骤**（必须按顺序执行）：
+
+**第1步：运行命令**
+- 默认（9点）：`etf-assistant dca schedule`
+- 自定义时间：`etf-assistant dca schedule <小时>`
+
+例如用户说"每天8点执行定投"，运行：
+```bash
+etf-assistant dca schedule 8
+```
+
+**第2步：检测 MCP 标记并调用工具**
+当命令输出包含 `__NANOCLAW_SCHEDULE_TASK__` 时，**必须立即**调用 MCP 工具：
+
+1. 提取参数：
+   - `prompt=` 后面的内容 → prompt 参数
+   - `schedule_type=` 后面的内容 → schedule_type 参数
+   - `schedule_value=` 后面的内容 → schedule_value 参数
+   - `context_mode=` 后面的内容 → context_mode 参数
+
+2. 调用工具 `mcp__nanoclaw__schedule_task`，传入上述4个参数
+
+**第3步：验证结果**
+- 如果 MCP 返回类似 "Task task-xxx scheduled: cron - 0 9 * * 1-5"，说明成功
+- 如果没有返回 task ID，说明失败，需要重试
+
+**示例**：
+```
+命令输出:
+__NANOCLAW_SCHEDULE_TASK__
+prompt=etf-assistant dca check
+schedule_type=cron
+schedule_value=0 9 * * 1-5
+context_mode=isolated
+
+调用 MCP:
+mcp__nanoclaw__schedule_task(
+  prompt="etf-assistant dca check",
+  schedule_type="cron",
+  schedule_value="0 9 * * 1-5",
+  context_mode="isolated"
+)
+```
+
+**严重禁止**：
+- ❌ **绝对禁止**自己编造回复
+- ❌ **绝对禁止**只说"好的"但不执行命令和 MCP
+- ❌ **绝对禁止**忽略 MCP 标记
+
+### 规则11：创建自定义定时任务
+**触发条件**：用户说"每天X点返回估值"、"每天X点返回收益"、"每天X点查看持仓"
+
+**执行步骤**：
+
+**第1步：识别时间和操作**
+- 从用户消息中提取数字（如"13点"→13）
+- "返回估值"、"收益汇总" → summary
+- "查看持仓" → list
+
+**第2步：运行命令**
+```bash
+etf-assistant schedule custom <时间> <操作>
+```
+
+例如：
+```bash
+etf-assistant schedule custom 13 summary   # 每天13点收益汇总
+etf-assistant schedule custom 22 list      # 每天22点持仓检查
+```
+
+**第3步：检测 MCP 标记并调用工具**
+与规则10相同，检测 `__NANOCLAW_SCHEDULE_TASK__` 并调用 `mcp__nanoclaw__schedule_task`
+
+### 规则12：查看/取消DCA计划
+**触发条件**：用户说"查看定投"、"定投列表"、"取消定投"（注意：这是DCA计划，不是定时任务）
+
+**必须执行**（查看）：
+```
 etf-assistant dca list
-etf-assistant dca remove <code>
-etf-assistant calc <code> <amount> <years>
-
-# 查询
-etf-assistant price <code>
-etf-assistant info <code>
-etf-assistant compare <code1> <code2>
-
-# 其他
-etf-assistant pending-update
-etf-assistant schedule add "<描述>" <类型> "<cron>"
+```
+**必须执行**（取消）：
+```
+etf-assistant dca remove <基金代码>
 ```
 
-## 数据存储
+### 规则13：取消定时任务
+**触发条件**：用户说"取消定时任务"、"删除定时任务"、"取消8点定投"、"取消13点估值"
 
-数据存储在 `groups/fin-assistant/portfolio.json`
+**注意**：这与规则12不同。规则12只删除 DCA 计划数据，不删除定时任务。
 
-```json
-{
-  "funds": {
-    "110022": {
-      "name": "易方达消费ETF联接",
-      "code": "110022",
-      "type": "ETF联接",
-      "etfCode": "510050",
-      "shares": 25000,
-      "costPrice": 1.20,
-      "nav": 1.260,
-      "totalIncome": 2500,
-      "dailyChange": 180,
-      "dailyChangePct": 0.60
-    }
-  },
-  "dca": {
-    "110022": {
-      "frequency": "daily",
-      "amount": 100,
-      "status": "active",
-      "nextDate": "2025-02-15"
-    }
-  }
-}
+**执行步骤**：
+
+**第1步：获取任务列表**
+调用 MCP 工具获取当前定时任务：
+```
+mcp__nanoclaw__list_tasks
 ```
 
-## 数据来源
+**第2步：匹配要取消的任务**
+从返回的任务列表中找到匹配的任务：
+- "取消8点定投" → 找 prompt 包含 "dca check" 或时间包含 "8" 的任务
+- "取消13点估值" → 找 prompt 包含 "summary" 且时间包含 "13" 的任务
 
-- 场内ETF：东方财富实时行情API
-- 场外基金：天天基金实时估值API
-- 基金信息：天天基金数据API
+**第3步：取消任务**
+调用 MCP 工具取消任务：
+```
+mcp__nanoclaw__cancel_task(task_id="任务ID")
+```
+
+**示例**：
+```
+用户: 取消8点定投定时任务
+
+你: (调用 mcp__nanoclaw__list_tasks)
+返回: [{"id":"task-xxx","prompt":"etf-assistant dca check","schedule_value":"0 8 * * 1-5"}]
+
+你: (调用 mcp__nanoclaw__cancel_task(task_id="task-xxx"))
+返回: Task task-xxx cancellation requested.
+
+你: 已取消 8:00 的定时任务
+```
+
+---
+
+## 流程示例
+
+### 图片识别（完整流程）
+```
+用户: (发送图片 image-123.jpg)
+
+你: $ ls -la /workspace/ipc/images/
+输出: image-123.jpg
+
+你: (调用 mcp__minimax__understand_image)
+工具返回: 基金代码: 023520, 持有份额: 7927.11, 成本价: 1.18
+
+你: $ etf-assistant add 023520 7927.11 1.18 -s
+输出: 已添加持仓：023520
+
+你: 已成功添加持仓，023520，7927.11份，成本1.18元
+```
+
+### 查询持仓
+```
+用户: 今天收益多少
+你: $ etf-assistant list
+输出: [持仓列表]
+你: 您的基金今天...
+```
+
+### 查询行情
+```
+用户: 023520 行情怎么样
+你: $ etf-assistant price 023520
+输出: [行情数据]
+你: 023520 当前价格...
+```
+
+### 卖出基金
+```
+用户: 卖出 023520 100份
+你: $ etf-assistant remove 023520 100
+输出: 已卖出 023520: 100份
+```
+
+---
+
+## 意图识别表
+
+| 用户意图 | 必须执行的命令 | 说明 |
+|----------|----------------|------|
+| 查询持仓/收益 | `etf-assistant list` | 禁止猜测 |
+| 收益汇总 | `etf-assistant summary` | 总体收益 |
+| 发送基金图片 | 3步：ls → 识别 → **add -s** | 必须全部执行 |
+| 买入/加仓 | `etf-assistant add <code> <份额> <成本> -s` | -s 覆盖已有 |
+| 卖出/清仓 | `etf-assistant remove <code> <份额>` 或 `<金额> -v` | 禁止询问 |
+| 查询行情 | `etf-assistant price <code>` | 禁止猜测 |
+| 查询基金信息 | `etf-assistant info <code>` | 基金类型等 |
+| 设置定投 | `etf-assistant dca add <code> <金额> daily/weekly` | |
+| 查看定投列表 | `etf-assistant dca list` | |
+| 取消定投 | `etf-assistant dca remove <code>` | 删除DCA计划数据 |
+| 取消定时任务 | MCP list_tasks + cancel_task | 删除IPC定时任务 |
+| 创建定时任务 | `etf-assistant dca schedule` → **必须调用 MCP** | 每天自动执行 |
+| 设置ETF代码 | `etf-assistant update-etf <code> <etf_code>` | 绑定ETF联接对应的ETF |
+| 对比ETF | `etf-assistant compare <code1> <code2>` | |
+| 计算定投收益 | `etf-assistant calc <code> <金额> <年限>` | |
+
+---
+
+## 严重错误（绝对禁止）
+
+1. ❌ **只分析图片不执行 add** - 最严重
+2. ❌ 询问用户"要添加吗？"
+3. ❌ 从对话历史/记忆猜测数据
+4. ❌ 用 Python/Read 读取 portfolio.json
+5. ❌ 回复"让我查一下"但不执行命令
+6. ❌ 说"已识别"但不加到系统
+7. ❌ 说"需要查询行情"但不执行 price 命令
