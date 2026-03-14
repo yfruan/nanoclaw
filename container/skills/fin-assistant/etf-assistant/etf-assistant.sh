@@ -101,16 +101,15 @@ lt() {
 }
 
 # 持仓数据文件路径 (可通过环境变量覆盖)
-# 获取脚本所在目录的根目录
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+# 获取脚本所在目录 - 从 etf-assistant/etf-assistant.sh 往上是 skills/etf-assistant/
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# 根据 GROUP_NAME 选择数据路径
-# 如果是 fin-assistant 群组（默认），使用 groups/fin-assistant/
-# 否则使用 /workspace/group/fin-assistant/ (挂载到对应群组的文件夹)
+# 数据位置: /home/node/.claude/skills/etf-assistant/portfolio.json
+# (data/sessions/fin-assistant/.claude/skills/etf-assistant/portfolio.json)
 if [ "$GROUP_NAME" = "fin-assistant" ] || [ -z "$GROUP_NAME" ]; then
-  PORTFOLIO_FILE="${PORTFOLIO_FILE:-$SCRIPT_DIR/groups/fin-assistant/portfolio.json}"
+  PORTFOLIO_FILE="${PORTFOLIO_FILE:-$SCRIPT_DIR/portfolio.json}"
 else
-  PORTFOLIO_FILE="${PORTFOLIO_FILE:-/workspace/group/fin-assistant/portfolio.json}"
+  PORTFOLIO_FILE="${PORTFOLIO_FILE:-$SCRIPT_DIR/portfolio.json}"
 fi
 
 # 获取ETF/基金代码对应的交易所
@@ -237,8 +236,9 @@ get_fund_nav() {
     local code=$1
 
     # 先尝试获取最终净值 (东方财富API)
-    local today=$(date +%Y-%m-%d)
-    local yesterday=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d "yesterday" +%Y-%m-%d 2>/dev/null)
+    # 使用中国时区（因为基金数据是北京时间）
+    local today=$(TZ=Asia/Shanghai date +%Y-%m-%d)
+    local yesterday=$(TZ=Asia/Shanghai date -v-1d +%Y-%m-%d 2>/dev/null || TZ=Asia/Shanghai date -d "yesterday" +%Y-%m-%d 2>/dev/null)
     local final_nav=""
     local final_change=""
 
@@ -252,8 +252,8 @@ get_fund_nav() {
         # 检查是否是今日或昨日数据（交易日收盘后会有）
         local nav_date=$(echo "$response" | sed 's/.*"FSRQ":"\([^"]*\)".*/\1/')
         if ([ "$nav_date" = "$today" ] || [ "$nav_date" = "$yesterday" ]) && [ -n "$final_nav" ]; then
-            # 格式: 最终净值|最终涨跌|来源(fin)
-            echo "$final_nav|$final_change|fin"
+            # 格式: 最终净值|最终涨跌|来源(fin)|日期
+            echo "$final_nav|$final_change|fin|$nav_date"
             return 0
         fi
     fi
@@ -270,7 +270,7 @@ get_fund_nav() {
 
         if [ -n "$gsz" ]; then
             # 格式: 估算净值|估算涨跌|来源(est)
-            echo "$gsz|$gszzl|est"
+            echo "$gsz|$gszzl|est|$gsz_time"
         else
             echo ""
         fi
@@ -292,7 +292,7 @@ get_fund_info() {
 
     # 提取基金类型
     local fund_type=""
-    if echo "$response" | grep -qE "ETF联接|QDII"; then
+    if echo "$response" | grep -qE "ETF联接|发起式联接|QDII"; then
         fund_type="ETF联接"
     elif echo "$response" | grep -q "混合"; then
         fund_type="混合"
@@ -322,9 +322,17 @@ get_fund_info() {
         etf_code=$(echo "$response" | grep -oE '"(holdcode|stockCode)":"[0-9]{6}"' | head -1 | sed 's/.*"holdcode":"//;s/"//;s/.*"stockCode":"//;s/"//')
     fi
 
-    # 方法4: 查找有效的ETF代码（159/160/510/511/512开头）
+    # 方法4: 查找有效的ETF代码（159/160/510/511/512/588开头）
     if [ -z "$etf_code" ]; then
-        etf_code=$(echo "$response" | grep -oE '159[0-9]{3}|160[0-9]{3}|510[0-9]{3}|511[0-9]{3}|512[0-9]{3}' | head -1)
+        etf_code=$(echo "$response" | grep -oE '159[0-9]{3}|160[0-9]{3}|510[0-9]{3}|511[0-9]{3}|512[0-9]{3}|588[0-9]{3}' | sort -u | head -1)
+    fi
+
+    # 方法5: 尝试从天天基金网获取ETF联接信息
+    if [ -z "$etf_code" ]; then
+        local tt_response=$(curl -s "https://fund.tiantianjijin.com/api/fund/${code}/info" 2>/dev/null)
+        if [ -n "$tt_response" ]; then
+            etf_code=$(echo "$tt_response" | grep -oE '"targetFund":"[0-9]{6}"' | head -1 | sed 's/"targetFund":"//;s/"//')
+        fi
     fi
 
     # 验证ETF代码是否有效（通过查询ETF名称）
@@ -422,6 +430,7 @@ show_help() {
     echo "  dca list                    查看定投计划"
     echo "  dca remove <代码>           移除定投"
     echo "  dca check                  检查并执行定投（定时任务用）"
+    echo "  dca schedule               创建定时任务（每天自动执行定投）"
     echo "  schedule add <描述> <类型> <cron>  添加定时任务"
     echo "  schedule list              查看定时任务"
     echo "  schedule remove <ID>       移除定时任务"
@@ -460,13 +469,57 @@ is_trading_day() {
 
     # 检查节假日
     if [ "$GROUP_NAME" = "fin-assistant" ] || [ -z "$GROUP_NAME" ]; then
-      local holidays_file="$SCRIPT_DIR/../groups/fin-assistant/holidays.json"
+      local holidays_file="$SCRIPT_DIR/holidays.json"
     else
-      local holidays_file="/workspace/group/fin-assistant/holidays.json"
+      local holidays_file="$SCRIPT_DIR/holidays.json"
     fi
+
+    local year
+    year=$(echo "$date" | cut -d'-' -f1)
+
+    # 如果节假日文件不存在或没有当年数据，自动获取
+    if [ ! -f "$holidays_file" ] || ! grep -q "$year" "$holidays_file" 2>/dev/null; then
+        # 从 nager.at API 获取节假日（主API）
+        local holidays_json=""
+        holidays_json=$(curl -s --max-time 10 "https://date.nager.at/api/v3/PublicHolidays/$year/CN" 2>/dev/null)
+
+        # 如果主API失败，尝试备用API
+        if [ -z "$holidays_json" ] || ! echo "$holidays_json" | grep -q "date"; then
+            # 尝试 github 上的中国节假日数据（备选）
+            holidays_json=$(curl -s --max-time 10 "https://raw.githubusercontent.com/holidays-cn/holidays/refs/heads/master/data/holidays/$year.json" 2>/dev/null)
+        fi
+
+        if [ -n "$holidays_json" ] && echo "$holidays_json" | grep -q "date"; then
+            # 解析API返回的节假日数据
+            echo "$holidays_json" | python3 -c "
+import json
+import sys
+
+try:
+    data = json.load(sys.stdin)
+    year = '$year'
+    holidays = []
+
+    # 解析数组格式
+    if isinstance(data, list):
+        for h in data:
+            if 'date' in h:
+                holidays.append(h['date'])
+
+    result = {year: holidays}
+    print(json.dumps(result, ensure_ascii=False))
+except:
+    print(json.dumps({year: []}, ensure_ascii=False))
+" 2>/dev/null > "$holidays_file"
+        fi
+
+        # 如果所有API都失败，只检查周末（不检查节假日）
+        if [ ! -s "$holidays_file" ]; then
+            echo "{\"$year\": []}" > "$holidays_file"
+        fi
+    fi
+
     if [ -f "$holidays_file" ]; then
-        local year
-        year=$(echo "$date" | cut -d'-' -f1)
         # 使用 Python 避免 shell 注入
         local holidays
         holidays=$(python3 -c "
@@ -519,19 +572,9 @@ get_next_trading_day() {
     done
 }
 
-# 设置 launchd 定时任务（如果需要）
+# 设置 NanoClaw 定时任务（通过 IPC）
 setup_dca_launchd() {
-    # 容器内不创建 launchd 配置（只在 macOS 主机上）
-    if [ -f "/.dockerenv" ] || [ ! -f "/usr/bin/launchctl" ]; then
-        return 0
-    fi
-
-    # 检查是否已经有 launchd 配置
-    local plist_path="$HOME/Library/LaunchAgents/com.nanoclaw.dca.plist"
-
-    if [ -f "$plist_path" ]; then
-        return 0  # 已存在
-    fi
+    echo -e "${CYAN}[DEBUG] setup_dca_launchd 开始执行${NC}" >&2
 
     # 检查是否有活跃的定投计划
     local dca_count
@@ -551,102 +594,130 @@ except:
         return 0  # 没有活跃定投
     fi
 
-    # 创建 launchd 配置
-    local project_dir
-    project_dir=$(cd "$(dirname "$SCRIPT_DIR")/../../../../" && pwd)
-
-    mkdir -p "$HOME/Library/LaunchAgents"
-
-    cat > "$plist_path" << 'EOFPLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.nanoclaw.dca</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/container</string>
-        <string>run</string>
-        <string>--rm</string>
-        <string>-v</string>
-        <string>PROJECT_DIR_PLACEHOLDER:/workspace:rw</string>
-        <string>-v</string>
-        <string>PROJECT_DIR_PLACEHOLDER/groups/fin-assistant:/workspace/group/fin-assistant:rw</string>
-        <string>nanoclaw-agent:latest</string>
-        <string>bash</string>
-        <string>/workspace/container/skills/fin-assistant/etf-assistant/dca-check.sh</string>
-    </array>
-    <key>StartCalendarInterval</key>
-    <array>
-        <dict>
-            <key>Hour</key>
-            <integer>9</integer>
-            <key>Minute</key>
-            <integer>0</integer>
-            <key>Weekday</key>
-            <integer>1</integer>
-        </dict>
-        <dict>
-            <key>Hour</key>
-            <integer>9</integer>
-            <key>Minute</key>
-            <integer>0</integer>
-            <key>Weekday</key>
-            <integer>2</integer>
-        </dict>
-        <dict>
-            <key>Hour</key>
-            <integer>9</integer>
-            <key>Minute</key>
-            <integer>0</integer>
-            <key>Weekday</key>
-            <integer>3</integer>
-        </dict>
-        <dict>
-            <key>Hour</key>
-            <integer>9</integer>
-            <key>Minute</key>
-            <integer>0</integer>
-            <key>Weekday</key>
-            <integer>4</integer>
-        </dict>
-        <dict>
-            <key>Hour</key>
-            <integer>9</integer>
-            <key>Minute</key>
-            <integer>0</integer>
-            <key>Weekday</key>
-            <integer>5</integer>
-        </dict>
-    </array>
-    <key>RunAtLoad</key>
-    <false/>
-</dict>
-</plist>
-EOFPLIST
-
-    # 替换路径占位符 (兼容 macOS 和 Linux)
-    if sed -i '' "s|PROJECT_DIR_PLACEHOLDER|$project_dir|g" "$plist_path" 2>/dev/null; then
-        : # macOS sed -i ''
-    elif sed -i "s|PROJECT_DIR_PLACEHOLDER|$project_dir|g" "$plist_path" 2>/dev/null; then
-        : # Linux sed -i
+    # 获取 chat_jid（优先从 IPC 文件读取，回退到环境变量）
+    local chat_jid
+    if [ -f "/workspace/ipc/chat_jid" ]; then
+        chat_jid=$(cat /workspace/ipc/chat_jid)
     else
-        # 备用方案: 使用 Python
-        python3 -c "
-import sys
-with open('$plist_path', 'r') as f:
-    content = f.read()
-content = content.replace('PROJECT_DIR_PLACEHOLDER', '$project_dir')
-with open('$plist_path', 'w') as f:
-    f.write(content)
-" 2>/dev/null || true
+        chat_jid="${NANOCLAW_CHAT_JID:-}"
+    fi
+    local group_folder="${GROUP_NAME:-fin-assistant}"
+
+    echo -e "${CYAN}[DEBUG] chat_jid=[$chat_jid]${NC}" >&2
+
+    if [ -z "$chat_jid" ]; then
+        echo -e "${YELLOW}[DEBUG] chat_jid 为空，跳过定时任务设置${NC}" >&2
+        return 0
     fi
 
-    # 加载 launchd 任务
-    launchctl load "$plist_path" 2>/dev/null || true
+    # 使用 NanoClaw IPC 标准路径
+    local ipc_tasks_dir="/workspace/ipc/tasks"
 
-    echo -e "${CYAN}⏰ 已设置每天9点自动执行定投${NC}"
+    echo -e "${CYAN}[DEBUG] 检查 IPC 目录: $ipc_tasks_dir${NC}" >&2
+    echo -e "${CYAN}[DEBUG] 目录存在: $([ -d "$ipc_tasks_dir" ] && echo "是" || echo "否")${NC}" >&2
+    echo -e "${CYAN}[DEBUG] 目录可写: $([ -w "$ipc_tasks_dir" ] && echo "是" || echo "否")${NC}" >&2
+    ls -la /workspace/ipc/ 2>&1 || echo "无法访问 /workspace/ipc" >&2
+
+    # 检查目录是否可写
+    if [ ! -w "$ipc_tasks_dir" ]; then
+        echo -e "${YELLOW}⚠️ IPC目录不可写: $ipc_tasks_dir${NC}" >&2
+        return 1
+    fi
+
+    # 为每个活跃的 DCA 计划创建定时任务
+    local dca_json
+    dca_json=$(python3 -c "
+import json
+try:
+    with open('$PORTFOLIO_FILE', 'r') as f:
+        d = json.load(f)
+    print(json.dumps(d.get('dca', {})))
+except:
+    print('{}')
+" 2>/dev/null)
+
+    if [ -z "$dca_json" ] || [ "$dca_json" = "{}" ]; then
+        return 0
+    fi
+
+    # 解析 DCA 计划并创建任务
+    # 对于相同基金代码，先取消旧任务再创建新任务（覆盖）
+    echo "$dca_json" | python3 -c "
+import json
+import sys
+import os
+
+dca = json.load(sys.stdin)
+chat_jid = '''$chat_jid'''
+ipc_dir = '''$ipc_tasks_dir'''
+
+for code, plan in dca.items():
+    if plan.get('status') != 'active':
+        continue
+
+    # 先取消旧任务（如果存在）
+    cancel_file = os.path.join(ipc_dir, f'cancel-dca-{code}.json')
+    cancel_task = {'type': 'cancel_task', 'taskId': f'dca-{code}'}
+    try:
+        with open(cancel_file, 'w') as f:
+            json.dump(cancel_task, f, ensure_ascii=False)
+    except:
+        pass  # 忽略取消失败
+
+    freq = plan.get('frequency', 'daily')
+    # cron: 0 9 * * 1-5 = 每天9点工作日
+    if freq == 'daily':
+        cron = '0 9 * * 1-5'
+    elif freq == 'weekly':
+        cron = '0 9 * * 1'
+    else:  # monthly
+        cron = '0 9 1 * *'
+
+    # 创建新任务
+    task = {
+        'type': 'schedule_task',
+        'taskId': f'dca-{code}',
+        'prompt': 'etf-assistant dca check',
+        'schedule_type': 'cron',
+        'schedule_value': cron,
+        'targetJid': chat_jid
+    }
+
+    task_file = os.path.join(ipc_dir, f'dca-{code}.json')
+    try:
+        with open(task_file, 'w') as f:
+            json.dump(task, f, ensure_ascii=False)
+        print(f'[OK] 已设置定时任务: {code} ({freq})')
+    except Exception as e:
+        print(f'[FAIL] 任务创建失败: {code} - {e}')
+"
+
+    echo -e "${CYAN}⏰ 已设置自动定投检查任务（工作日9点）${NC}"
+}
+
+# 取消 NanoClaw 定时任务
+cancel_dca_task() {
+    local code=$1
+
+    if [ -z "$code" ]; then
+        return 0
+    fi
+
+    local ipc_tasks_dir="/workspace/ipc/tasks"
+    if [ ! -d "$ipc_tasks_dir" ]; then
+        return 0
+    fi
+
+    # 写入取消任务的文件
+    local cancel_file="${ipc_tasks_dir}/cancel-dca-${code}.json"
+    cat > "$cancel_file" << EOF
+{
+  "type": "cancel_task",
+  "taskId": "dca-${code}"
+}
+EOF
+
+    echo -e "${CYAN}⏰ 已取消定投任务: $code${NC}"
 }
 
 # 初始化持仓文件
@@ -741,15 +812,31 @@ if code in funds:
         if [ -n "$nav_info" ]; then
             local gsz=$(echo "$nav_info" | cut -d'|' -f1)
             local gszzl=$(echo "$nav_info" | cut -d'|' -f2)
-            local gsz_time=$(echo "$nav_info" | cut -d'|' -f3)
+            local nav_source=$(echo "$nav_info" | cut -d'|' -f3)
+            local gsz_time=$(echo "$nav_info" | cut -d'|' -f4)
+
+            # 格式化日期显示
+            local display_date=""
+            if [ -n "$gsz_time" ] && [ "$gsz_time" != "est" ]; then
+                display_date=$(echo "$gsz_time" | sed 's/.*-\([0-9]*\)-\([0-9]*\)/\1月\2日/')
+            fi
+
+            local nav_label="估算净值"
+            if [ "$nav_source" = "fin" ]; then
+                nav_label="净值"
+            fi
 
             echo -e "📌 ETF联接基金 (天天基金实时估值)"
             if [ -n "$etf_code" ]; then
                 echo -e "对应ETF: $etf_code"
             fi
-            echo -e "估算净值: ${GREEN}$gsz${NC}"
+            echo -e "${nav_label}: ${GREEN}$gsz${NC}"
             echo -e "估算涨跌: $(echo "$gszzl >= 0" | bc -l | grep -q 1 && echo "+$gszzl" || echo "$gszzl")%"
-            echo -e "更新时间: $gsz_time"
+            if [ -n "$display_date" ]; then
+                echo -e "更新日期: $display_date"
+            else
+                echo -e "更新时间: $gsz_time"
+            fi
 
             if (( $(echo "$gszzl > 0" | bc -l) )); then
                 echo -e "${GREEN}📈 上涨${NC}"
@@ -801,11 +888,27 @@ if code in funds:
         if [ -n "$nav_info" ]; then
             local gsz=$(echo "$nav_info" | cut -d'|' -f1)
             local gszzl=$(echo "$nav_info" | cut -d'|' -f2)
-            local gsz_time=$(echo "$nav_info" | cut -d'|' -f3)
+            local gsz_time=$(echo "$nav_info" | cut -d'|' -f4)
+            local nav_source=$(echo "$nav_info" | cut -d'|' -f3)
 
-            echo -e "估算净值: ${GREEN}$gsz${NC}"
+            # 格式化日期显示
+            local display_date=""
+            if [ -n "$gsz_time" ] && [ "$gsz_time" != "est" ]; then
+                display_date=$(echo "$gsz_time" | sed 's/.*-\([0-9]*\)-\([0-9]*\)/\1月\2日/')
+            fi
+
+            local nav_label="估算净值"
+            if [ "$nav_source" = "fin" ]; then
+                nav_label="净值"
+            fi
+
+            echo -e "${nav_label}: ${GREEN}$gsz${NC}"
             echo -e "估算涨跌: $(echo "$gszzl >= 0" | bc -l | grep -q 1 && echo "+$gszzl" || echo "$gszzl")%"
-            echo -e "更新时间: $gsz_time"
+            if [ -n "$display_date" ]; then
+                echo -e "更新日期: $display_date"
+            else
+                echo -e "更新时间: $gsz_time"
+            fi
 
             if (( $(echo "$gszzl > 0" | bc -l) )); then
                 echo -e "${GREEN}📈 上涨${NC}"
@@ -1755,9 +1858,8 @@ except:
     echo "金额: ¥$amount"
     echo "频率: $frequency"
     echo "下次定投: $next_date"
-
-    # 检查是否需要创建 launchd 定时任务
-    setup_dca_launchd
+    echo ""
+    echo "💡 提示: 设置每日自动执行定投，请运行: etf-assistant dca schedule"
 }
 
 # 命令: 定投列表
@@ -1776,15 +1878,19 @@ cmd_dca_list() {
         return 0
     fi
 
-    # 获取基金名称
-    local funds=$(echo "$portfolio" | python3 -c "import json,sys; d=json.load(sys.stdin); print(json.dumps(d.get('funds',{})))" 2>/dev/null)
+    # 获取基金名称 - 使用 base64 避免特殊字符问题
+    local funds_b64
+    funds_b64=$(echo "$portfolio" | python3 -c "import json,sys; import base64; d=json.load(sys.stdin); print(base64.b64encode(json.dumps(d.get('funds',{})).encode()).decode())" 2>/dev/null)
 
+    # 解码并解析 DCA 列表 - 使用纯文本格式避免表格渲染问题
     echo "$dca" | python3 -c "
 import json
 import sys
+import base64
 
 dca = json.load(sys.stdin)
-funds = json.loads('''$funds''')
+funds_json = base64.b64decode('${funds_b64:-}').decode() if '${funds_b64:-}' else '{}'
+funds = json.loads(funds_json) if funds_json else {}
 
 for code, plan in dca.items():
     name = code
@@ -1797,7 +1903,7 @@ for code, plan in dca.items():
     next_date = plan.get('nextDate', '')
 
     freq_map = {'daily': '每日', 'weekly': '每周', 'monthly': '每月'}
-    print(f'{name}({code})')
+    print(f'• {name}({code})')
     print(f'  金额: ¥{amount} | 频率: {freq_map.get(freq, freq)} | 状态: {status}')
     print(f'  下次定投: {next_date}')
     print()
@@ -1838,6 +1944,9 @@ except:
     if [ -n "$result" ]; then
         write_portfolio "$result"
     fi
+
+    # 取消对应的定时任务
+    cancel_dca_task "$code"
 
     echo -e "${GREEN}✅ 定投计划已移除: $code${NC}"
 }
@@ -1922,6 +2031,115 @@ except:
     done <<< "$dca_plans"
 
     echo -e "${CYAN}定投检查完成${NC}"
+}
+
+# 命令: 创建定时任务
+cmd_dca_schedule() {
+    init_portfolio
+
+    # 支持传入时间参数，默认为 9 点
+    local time="${1:-9}"
+
+    # 验证时间格式
+    if ! [[ "$time" =~ ^[0-9]{1,2}$ ]] || [ "$time" -lt 0 ] || [ "$time" -gt 23 ]; then
+        echo -e "${RED}❌ 无效的时间${NC}"
+        echo "时间必须是 0-23 之间的整数"
+        return 1
+    fi
+
+    # 检查是否有活跃的定投计划
+    local dca_count
+    dca_count=$(python3 -c "
+import json
+try:
+    with open('$PORTFOLIO_FILE', 'r') as f:
+        d = json.load(f)
+    dca = d.get('dca', {})
+    active_count = sum(1 for p in dca.values() if p.get('status') == 'active')
+    print(active_count)
+except:
+    print(0)
+" 2>/dev/null || echo "0")
+
+    if [ "$dca_count" -lt 1 ]; then
+        echo -e "${YELLOW}没有活跃的定投计划${NC}"
+        echo "请先添加定投计划: etf-assistant dca add <代码> <金额> daily"
+        return 1
+    fi
+
+    local cron_minute="0"
+    local cron_hour="$time"
+
+    echo -e "${GREEN}✅ 找到 $dca_count 个活跃定投计划${NC}"
+    echo ""
+    # 输出 MCP 标记，Claude Agent 会自动检测并调用 MCP 工具
+    echo "__NANOCLAW_SCHEDULE_TASK__"
+    echo "prompt=etf-assistant dca check"
+    echo "schedule_type=cron"
+    echo "schedule_value=$cron_minute $cron_hour * * 1-5"
+    echo "context_mode=isolated"
+}
+
+# 命令: 创建自定义定时任务
+cmd_schedule_custom() {
+    local time="$1"
+    local action="$2"
+
+    # 验证时间格式
+    if [ -z "$time" ]; then
+        echo -e "${RED}❌ 请指定时间${NC}"
+        echo "用法: etf-assistant schedule custom <时间> <操作>"
+        echo "示例: etf-assistant schedule custom 13 summary"
+        echo "      etf-assistant schedule custom 22 list"
+        return 1
+    fi
+
+    if ! [[ "$time" =~ ^[0-9]{1,2}$ ]] || [ "$time" -lt 0 ] || [ "$time" -gt 23 ]; then
+        echo -e "${RED}❌ 无效的时间${NC}"
+        echo "时间必须是 0-23 之间的整数"
+        return 1
+    fi
+
+    # 默认操作
+    local prompt="etf-assistant summary"
+    local description="收益汇总"
+
+    case "$action" in
+        summary|收益|收益汇总)
+            prompt="etf-assistant summary"
+            description="收益汇总"
+            ;;
+        list|持仓|查看持仓)
+            prompt="etf-assistant list"
+            description="持仓检查"
+            ;;
+        price|行情)
+            prompt="etf-assistant price"
+            description="行情查询"
+            ;;
+        dca|dca-check|定投检查)
+            prompt="etf-assistant dca check"
+            description="定投检查"
+            ;;
+        *)
+            # 如果指定了自定义命令
+            if [ -n "$action" ]; then
+                prompt="etf-assistant $action"
+                description="自定义任务: $action"
+            fi
+            ;;
+    esac
+
+    echo -e "${GREEN}✅ 定时任务配置${NC}"
+    echo "时间: 每天 $time:00"
+    echo "任务: $description"
+    echo ""
+    # 输出 MCP 标记
+    echo "__NANOCLAW_SCHEDULE_TASK__"
+    echo "prompt=$prompt"
+    echo "schedule_type=cron"
+    echo "schedule_value=0 $time * * 1-5"
+    echo "context_mode=isolated"
 }
 
 # 命令: 定时任务添加
@@ -2440,9 +2658,12 @@ case "$1" in
             check)
                 cmd_dca_check
                 ;;
+            schedule)
+                cmd_dca_schedule
+                ;;
             *)
                 echo -e "${RED}❌ 未知dca子命令${NC}"
-                echo "用法: $0 dca add|list|remove|check"
+                echo "用法: $0 dca add|list|remove|check|schedule"
                 ;;
         esac
         ;;
@@ -2460,15 +2681,24 @@ case "$1" in
             init)
                 cmd_schedule_init "$3"
                 ;;
+            custom)
+                # etf-assistant schedule custom <时间> <操作>
+                cmd_schedule_custom "$3" "$4"
+                ;;
             *)
                 echo -e "${RED}❌ 未知schedule子命令${NC}"
-                echo "用法: $0 schedule add|list|remove|init"
+                echo "用法: $0 schedule add|list|remove|init|custom"
                 echo ""
                 echo "子命令："
                 echo "  add <描述> <类型> <cron>     添加定时任务"
                 echo "  list                         列出定时任务"
                 echo "  remove <任务ID>              移除定时任务"
-                echo "  init [chat_jid]              初始化定时任务配置（设置接收通知的聊天）"
+                echo "  init [chat_jid]              初始化定时任务配置"
+                echo "  custom <时间> <操作>         创建自定义定时任务"
+                echo ""
+                echo "示例："
+                echo "  $0 schedule custom 13 summary  # 每天13点收益汇总"
+                echo "  $0 schedule custom 22 list    # 每天22点持仓检查"
                 ;;
         esac
         ;;
