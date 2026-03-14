@@ -392,6 +392,7 @@ async function runQuery(
   for await (const message of query({
     prompt: stream,
     options: {
+      model: sdkEnv.model,
       cwd: '/workspace/group',
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
@@ -408,8 +409,7 @@ async function runQuery(
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
-        'mcp__minimax__*',
-        'mcp__ollama__*'
+        'mcp__minimax__*'
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -432,10 +432,6 @@ async function runQuery(
             MINIMAX_API_KEY: sdkEnv.MINIMAX_API_KEY || '',
             MINIMAX_API_HOST: sdkEnv.MINIMAX_API_HOST || 'https://api.minimaxi.com',
           },
-        },
-        ollama: {
-          command: 'node',
-          args: [path.join(path.dirname(mcpServerPath), 'ollama-mcp-stdio.js')],
         },
       },
       hooks: {
@@ -499,6 +495,31 @@ async function main(): Promise<void> {
   // No real secrets exist in the container environment.
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
 
+  // Read model.json to check for custom model configuration
+  const modelConfigPath = path.join('/workspace/group', 'model.json');
+  let modelConfig = { provider: '', model: '' };
+  if (fs.existsSync(modelConfigPath)) {
+    try {
+      modelConfig = JSON.parse(fs.readFileSync(modelConfigPath, 'utf-8'));
+    } catch (e) { /* ignore */ }
+  }
+
+  // Set model in sdkEnv for Ollama if configured
+  if (modelConfig.provider === 'ollama' && modelConfig.model) {
+    // Auto-detect gateway IP for Ollama host
+    let gatewayIP = '192.168.64.1';
+    try {
+      const { execSync } = require('child_process');
+      gatewayIP = execSync('ipconfig getifaddr bridge100', { encoding: 'utf-8' }).trim() || '192.168.64.1';
+    } catch { /* use default */ }
+
+    // Use model from config, or default, or fallback to qwen3.5:9b
+    sdkEnv.model = modelConfig.model || 'qwen3.5:9b';
+    // Set API to Ollama endpoint
+    sdkEnv.ANTHROPIC_BASE_URL = `http://${gatewayIP}:11434`;
+    sdkEnv.ANTHROPIC_AUTH_TOKEN = 'ollama';
+    sdkEnv.ANTHROPIC_API_KEY = 'ollama';
+  }
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
