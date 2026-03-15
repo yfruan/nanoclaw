@@ -496,7 +496,7 @@ async function main(): Promise<void> {
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
 
   // Read model.json to check for custom model configuration
-  const modelConfigPath = path.join('/workspace/group', 'model.json');
+  const modelConfigPath = path.join('/home/node/.claude', 'model.json');
   let modelConfig = { provider: '', model: '' };
   if (fs.existsSync(modelConfigPath)) {
     try {
@@ -510,11 +510,11 @@ async function main(): Promise<void> {
     let gatewayIP = '192.168.64.1';
     try {
       const { execSync } = require('child_process');
-      gatewayIP = execSync('ipconfig getifaddr bridge100', { encoding: 'utf-8' }).trim() || '192.168.64.1';
+      gatewayIP = execSync('ipconfig getifaddr bridge100', { encoding: 'utf-8' }).trim();
     } catch { /* use default */ }
 
-    // Use model from config, or default, or fallback to qwen3.5:9b
-    sdkEnv.model = modelConfig.model || 'qwen3.5:9b';
+    // Use model from config
+    sdkEnv.model = modelConfig.model;
     // Set API to Ollama endpoint
     sdkEnv.ANTHROPIC_BASE_URL = `http://${gatewayIP}:11434`;
     sdkEnv.ANTHROPIC_AUTH_TOKEN = 'ollama';
