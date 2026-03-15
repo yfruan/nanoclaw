@@ -280,10 +280,11 @@ get_fund_nav() {
 }
 
 # 获取基金基本信息（类型、ETF联接对应ETF代码）
+# 返回格式: fund_type|etf_code
+# 如果是ETF联接但无法获取etf_code，返回 fund_type|?  (问号表示需要用户手动指定)
 get_fund_info() {
     local code=$1
-    local url="https://fund.eastmoney.com/pingzhongdata/${code}.js"
-    local response=$(curl -s "$url" 2>/dev/null | head -2000)
+    local response=$(curl -s "https://fund.eastmoney.com/pingzhongdata/${code}.js" 2>/dev/null | head -2000)
 
     if [ -z "$response" ]; then
         echo ""
@@ -304,35 +305,42 @@ get_fund_info() {
         fund_type="其他"
     fi
 
-    # 提取ETF联接对应的ETF代码
+    # 提取ETF联接对应的ETF代码（仅从东方财富基金详情页提取"查看相关ETF"）
     local etf_code=""
 
-    # 方法1: 查找 jjtzz 字段（基金投资组合）
-    if [ -z "$etf_code" ]; then
-        etf_code=$(echo "$response" | grep -oE '"jjtzz":"[0-9]{6}"' | head -1 | sed 's/"jjtzz":"//;s/"//')
-    fi
+    local detail_response=$(curl -s "https://fund.eastmoney.com/${code}.html" 2>/dev/null)
+    if [ -n "$detail_response" ]; then
+        # 提取"查看相关ETF>"链接后的ETF代码
+        etf_code=$(echo "$detail_response" | python3 -c "
+import re, sys
+from html.parser import HTMLParser
 
-    # 方法2: 查找 mrcde 字段（基金代码）
-    if [ -z "$etf_code" ]; then
-        etf_code=$(echo "$response" | grep -oE '"mrcde":"[0-9]{6}"' | head -1 | sed 's/"mrcde":"//;s/"//')
-    fi
+html = sys.stdin.read()
 
-    # 方法3: 查找持仓中的ETF代码（5开头或159/160/161开头）
-    if [ -z "$etf_code" ]; then
-        etf_code=$(echo "$response" | grep -oE '"(holdcode|stockCode)":"[0-9]{6}"' | head -1 | sed 's/.*"holdcode":"//;s/"//;s/.*"stockCode":"//;s/"//')
-    fi
+class ETFLinkParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.etf_code = None
+        self.current_href = None
 
-    # 方法4: 查找有效的ETF代码（159/160/510/511/512/588开头）
-    if [ -z "$etf_code" ]; then
-        etf_code=$(echo "$response" | grep -oE '159[0-9]{3}|160[0-9]{3}|510[0-9]{3}|511[0-9]{3}|512[0-9]{3}|588[0-9]{3}' | sort -u | head -1)
-    fi
+    def handle_starttag(self, tag, attrs):
+        if tag == 'a':
+            for attr, value in attrs:
+                if attr == 'href':
+                    self.current_href = value
+                    break
 
-    # 方法5: 尝试从天天基金网获取ETF联接信息
-    if [ -z "$etf_code" ]; then
-        local tt_response=$(curl -s "https://fund.tiantianjijin.com/api/fund/${code}/info" 2>/dev/null)
-        if [ -n "$tt_response" ]; then
-            etf_code=$(echo "$tt_response" | grep -oE '"targetFund":"[0-9]{6}"' | head -1 | sed 's/"targetFund":"//;s/"//')
-        fi
+    def handle_data(self, data):
+        if data == '查看相关ETF>' and self.current_href:
+            # 从href中提取ETF代码
+            match = re.search(r'/(\d{6})\.html', self.current_href)
+            if match:
+                self.etf_code = match.group(1)
+
+parser = ETFLinkParser()
+parser.feed(html)
+print(parser.etf_code if parser.etf_code else '')
+" 2>/dev/null)
     fi
 
     # 验证ETF代码是否有效（通过查询ETF名称）
@@ -342,6 +350,11 @@ get_fund_info() {
             # ETF代码无效，清空
             etf_code=""
         fi
+    fi
+
+    # 如果是ETF联接但无法获取etf_code，返回"?"让调用方提示用户
+    if [ "$fund_type" = "ETF联接" ] && [ -z "$etf_code" ]; then
+        etf_code="?"
     fi
 
     echo "$fund_type|$etf_code"
@@ -1015,6 +1028,11 @@ cmd_add() {
     local etf_code=$(echo "$fund_info" | cut -d'|' -f2)
 
     # 优先级: 手动指定 > 已保存的 > API检测
+    # 如果API返回?，表示无法自动获取，需要用户手动指定
+    if [ "$etf_code" = "?" ]; then
+        etf_code=""
+    fi
+
     if [ -n "$manual_etf_code" ]; then
         etf_code="$manual_etf_code"
     elif [ -f "$PORTFOLIO_FILE" ]; then
@@ -1027,6 +1045,13 @@ if code in funds:
     print(funds[code].get('etfCode', ''))
 " 2>/dev/null)
         [ -n "$saved" ] && etf_code="$saved"
+    fi
+
+    # 如果仍然是空的且是ETF联接，提示用户手动指定
+    if [ "$fund_type" = "ETF联接" ] && [ -z "$etf_code" ]; then
+        echo -e "${YELLOW}⚠️ 无法自动获取 $code 对应的ETF代码，请手动指定${NC}"
+        echo "  使用 -e 参数指定: $0 add $code <金额> -e <ETF代码>"
+        echo "  示例: $0 add $code 1000 -e 563020"
     fi
 
     # 获取当前净值
@@ -1228,6 +1253,10 @@ print(json.dumps(d))
             echo "金额: ¥$amount"
             echo "份额: $shares"
             echo "成本价: $cost"
+        fi
+        # 如果是ETF联接，输出对应的ETF代码
+        if [ "$fund_type" = "ETF联接" ] && [ -n "$etf_code" ]; then
+            echo "对应ETF: $etf_code ($(get_etf_name "$etf_code"))"
         fi
     fi
 }
