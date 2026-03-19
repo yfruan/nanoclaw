@@ -73,6 +73,14 @@ npm run build
 - If features are broken by conflicts, fix according to origin/main architecture
 - Re-run build to verify
 
+### 5.1. Sync Dependencies
+```bash
+npm install
+```
+- If package-lock.json was deleted in local-dev → already handled in step 4
+- If package-lock.json was modified in both → npm install will regenerate consistent lockfile
+- Ensures dependencies match the lockfile
+
 ### 6. Push to Remote
 ```bash
 git push origin local-dev --force-with-lease
