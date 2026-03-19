@@ -1,49 +1,10 @@
 # NanoClaw Agent Container
 # Runs Claude Agent SDK in isolated Linux VM with browser automation
+# Uses Dockerfile.base for system dependencies (cached)
 
-FROM node:22-slim
-
-# Install system dependencies for Chromium
-RUN apt-get update && apt-get install -y \
-    chromium \
-    fonts-liberation \
-    fonts-noto-cjk \
-    fonts-noto-color-emoji \
-    libgbm1 \
-    libnss3 \
-    libatk-bridge2.0-0 \
-    libgtk-3-0 \
-    libx11-xcb1 \
-    bc \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    libasound2 \
-    libpangocairo-1.0-0 \
-    libcups2 \
-    libdrm2 \
-    libxshmfence1 \
-    curl \
-    git \
-    python3 \
-    python3-pip \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install uv with 国内镜像
-RUN pip3 install uv -i https://pypi.tuna.tsinghua.edu.cn/simple --break-system-packages
-
-# Configure uv mirror for MCP servers
-ENV UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-
-# Set Chromium path for agent-browser
-ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
-ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
-
-# Prefer IPv4 for DNS resolution (required for Apple Container NAT)
-ENV NODE_OPTIONS=--dns-result-order=ipv4first
-
-# Install agent-browser and claude-code globally
-RUN npm install -g skills-cli agent-browser @anthropic-ai/claude-code --registry https://registry.npmmirror.com 2>/dev/null
+# Build base image first, then use it here
+# docker build -f Dockerfile.base -t nanoclaw-base:latest .
+FROM nanoclaw-base:latest
 
 # Create app directory
 WORKDIR /app
@@ -62,6 +23,9 @@ RUN npm run build
 
 # Create workspace directories
 RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
+
+# Install global tools (ensure latest versions)
+RUN npm install -g skills-cli agent-browser @anthropic-ai/claude-code --registry https://registry.npmmirror.com 2>/dev/null
 
 # Create entrypoint script
 # Container input (prompt, group info) is passed via stdin JSON.

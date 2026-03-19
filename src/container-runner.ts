@@ -26,6 +26,7 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
+import { readEnvFile } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -255,6 +256,15 @@ function buildContainerArgs(
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+  }
+
+  // Pass MINIMAX env vars to container (for MCP)
+  const miniMaxEnv = readEnvFile(['MINIMAX_API_KEY', 'MINIMAX_API_HOST']);
+  if (miniMaxEnv.MINIMAX_API_KEY) {
+    args.push('-e', `MINIMAX_API_KEY=${miniMaxEnv.MINIMAX_API_KEY}`);
+  }
+  if (miniMaxEnv.MINIMAX_API_HOST) {
+    args.push('-e', `MINIMAX_API_HOST=${miniMaxEnv.MINIMAX_API_HOST}`);
   }
 
   // Runtime-specific args for host gateway resolution

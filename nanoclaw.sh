@@ -1,40 +1,12 @@
 #!/bin/bash
 # NanoClaw Service Manager
-# Usage: ./nanoclaw.sh [start|stop|restart|status|network]
+# Usage: ./nanoclaw.sh [start|stop|restart|status|build]
 
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLIST_FILE="$HOME/Library/LaunchAgents/com.nanoclaw.plist"
 LOG_FILE="$PROJECT_DIR/logs/nanoclaw.log"
-
-# Apple Container 网络配置 (用于容器内访问外网)
-setup_network() {
-    echo "Checking Apple Container network configuration..."
-
-    # 检查IP转发
-    if ! sysctl net.inet.ip.forwarding | grep -q ": 1"; then
-        echo "Enabling IP forwarding..."
-        sudo sysctl -w net.inet.ip.forwarding=1
-    fi
-
-    # 获取默认网络接口
-    INTERFACE=$(route get 8.8.8.8 2>/dev/null | grep interface | awk '{print $2}')
-
-    if [ -z "$INTERFACE" ]; then
-        echo "Warning: Could not determine network interface"
-        return
-    fi
-
-    # 检查NAT规则是否已配置
-    if ! sudo pfctl -s nat 2>/dev/null | grep -q "192.168.64.0/24"; then
-        echo "Configuring NAT for Apple Container (interface: $INTERFACE)..."
-        echo "nat on $INTERFACE from 192.168.64.0/24 to any -> ($INTERFACE)" | sudo pfctl -mf -
-        echo "NAT configured successfully"
-    else
-        echo "NAT already configured"
-    fi
-}
 
 # 设置群组 Ollama 模型
 model_set() {
@@ -86,43 +58,24 @@ model_unset() {
     fi
 }
 
-# 启动本地 Ollama 模型
+# 启动本地 Ollama 服务
 ollama_run() {
-    local model_name="$1"
-    local think_flag=""
-
-    # 解析参数
-    shift
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --think=false)
-                think_flag="--think=false"
-                ;;
-            *)
-                echo "Unknown option: $1"
-                exit 1
-                ;;
-        esac
-        shift
-    done
-
-    if [ -z "$model_name" ]; then
-        echo "Usage: $0 ollama run <model> [--think=false]"
-        echo "Example: $0 ollama run qwen3.5:9b"
-        echo "         $0 ollama run qwen3.5:9b --think=false"
-        exit 1
+    # 检查 ollama serve 是否已运行
+    if pgrep -f "ollama serve" > /dev/null; then
+        echo "Ollama serve is already running"
+        return 0
     fi
 
-    echo "Starting Ollama with model: $model_name $think_flag"
-    ollama run "$model_name" $think_flag &
-    echo "Ollama started in background"
-    echo "Use '$0 ollama status' to check status"
+    echo "Starting Ollama serve..."
+    open -a Ollama
+    sleep 2
+    echo "Ollama started"
 }
 
 # 停止本地 Ollama
 ollama_stop() {
-    if pgrep -f "ollama run" > /dev/null; then
-        pkill -f "ollama run"
+    if pgrep -f "ollama serve" > /dev/null; then
+        pkill -f "ollama serve"
         echo "Ollama stopped"
     else
         echo "Ollama is not running"
@@ -131,9 +84,9 @@ ollama_stop() {
 
 # 查看 Ollama 状态
 ollama_status() {
-    if pgrep -f "ollama run" > /dev/null; then
+    if pgrep -f "ollama serve" > /dev/null; then
         echo "Ollama is running"
-        ps aux | grep "ollama run" | grep -v grep
+        ps aux | grep "ollama serve" | grep -v grep
     else
         echo "Ollama is not running"
     fi
@@ -157,9 +110,6 @@ build() {
 
 start() {
     echo "Starting NanoClaw..."
-
-    # 配置Apple Container网络
-    setup_network
 
     # 清理可能遗留的开发进程（tsx、node src/index.ts）
     echo "Cleaning up stale dev processes..."
@@ -186,10 +136,10 @@ stop() {
 
     # 清理残留容器
     echo "Cleaning up orphaned containers..."
-    for container_id in $(container ls --quiet 2>/dev/null); do
-        if [ "$container_id" != "buildkit" ]; then
+    docker ps --filter name=nanoclaw- --format '{{.Names}}' | while read -r container_id; do
+        if [ -n "$container_id" ]; then
             echo "Stopping container: $container_id"
-            container stop "$container_id" 2>/dev/null || true
+            docker stop "$container_id" 2>/dev/null || true
         fi
     done
 }
@@ -209,8 +159,8 @@ status() {
     fi
 
     echo ""
-    echo "=== Container Status ==="
-    container ls 2>/dev/null || echo "Apple Container not running"
+    echo "=== Docker Status ==="
+    docker ps 2>/dev/null || echo "Docker is not running"
 
     echo ""
     echo "=== Recent Logs ==="
@@ -233,9 +183,6 @@ case "$1" in
         ;;
     status)
         status
-        ;;
-    network)
-        setup_network
         ;;
     build)
         build
@@ -270,20 +217,18 @@ case "$1" in
         printf "  %-30s %s\n" "stop" "Stop NanoClaw service"
         printf "  %-30s %s\n" "restart" "Restart NanoClaw service"
         printf "  %-30s %s\n" "status" "Show service status"
-        printf "  %-30s %s\n" "network" "Configure Apple Container NAT network"
         printf "  %-30s %s\n" "build" "Build TypeScript and container image"
         printf "  %-30s %s\n" "model set <group> <model>" "Set Ollama model for group"
         printf "  %-30s %s\n" "model unset <group>" "Remove model config for group"
-        printf "  %-30s %s\n" "ollama run <model>" "Start Ollama model in background"
+        printf "  %-30s %s\n" "ollama start" "Start Ollama serve"
         printf "  %-30s %s\n" "ollama stop" "Stop Ollama"
         printf "  %-30s %s\n" "ollama status" "Show Ollama status"
         printf "  %-30s %s\n" "help" "Show this help message"
         ;;
     ollama)
         case "$2" in
-            run)
-                shift 2
-                ollama_run "$@"
+            start|run)
+                ollama_run
                 ;;
             stop)
                 ollama_stop
@@ -292,16 +237,16 @@ case "$1" in
                 ollama_status
                 ;;
             *)
-                echo "Usage: $0 ollama {run|stop|status}"
-                echo "  run <model> [--think=false]  Start Ollama model"
-                echo "  stop                         Stop Ollama"
-                echo "  status                       Show status"
+                echo "Usage: $0 ollama {start|stop|status}"
+                echo "  start  Start Ollama serve (API server)"
+                echo "  stop   Stop Ollama"
+                echo "  status Show status"
                 exit 1
                 ;;
         esac
         ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status|network|build|model|ollama|help}"
+        echo "Usage: $0 {start|stop|restart|status|build|model|ollama|help}"
         echo "Run '$0 help' for more information"
         exit 1
         ;;
