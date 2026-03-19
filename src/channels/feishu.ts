@@ -291,14 +291,8 @@ export class FeishuChannel implements Channel {
     // Build message content - add image_path tag if image was saved
     let msgContent = mediaInfo ? `${content} ${mediaInfo}` : content;
     if (imagePath) {
-      msgContent = `${msgContent}\n\n<image_path>${imagePath}</image_path>`;
-      // For fin-assistant group, add trigger keyword to activate skill when only image is sent
-      const isImageOnly = content?.trim() === '<media:image>' || content?.trim() === 'image' || !content?.trim();
-      if (groupFolder === 'fin-assistant' && isImageOnly) {
-        // CRITICAL: 必须执行 etf-assistant add 命令，该命令会从 API 获取真实基金名称
-        // 禁止自己输出任何识别结果，必须使用命令返回的真实名称
-        msgContent = `<image_path>${imagePath}</image_path>\n\n用 vision 识别图片获取基金代码、份额、成本价，然后执行命令: etf-assistant add <代码> <份额> <成本价> -s\n重要：必须执行命令并返回命令输出，不要自己输出识别结果！`;
-      }
+      // Add image_path tag - group CLAUDE.md will handle how to process it
+      msgContent = `<image_path>${imagePath}</image_path>`;
     }
 
     // Check for /register command - handle it directly and return early
@@ -454,7 +448,8 @@ export class FeishuChannel implements Channel {
       fs.writeFileSync(imagePath, buffer);
 
       // Return container path (will be mounted at /workspace/ipc)
-      const containerImagePath = `/workspace/ipc/${groupFolder}/images/${imageFilename}`;
+      // Host {DATA_DIR}/ipc/{folder} mounts to container /workspace/ipc
+      const containerImagePath = `/workspace/ipc/images/${imageFilename}`;
       logger.info({ imageKey, messageId, size: buffer.length, imagePath: containerImagePath }, 'Feishu image saved to file');
 
       return containerImagePath;
