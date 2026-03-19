@@ -491,10 +491,6 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.
-  // No real secrets exist in the container environment.
-  const sdkEnv: Record<string, string | undefined> = { ...process.env };
-
   // Read model.json to check for custom model configuration
   const modelConfigPath = path.join('/home/node/.claude', 'model.json');
   let modelConfig = { provider: '', model: '' };
@@ -504,21 +500,18 @@ async function main(): Promise<void> {
     } catch (e) { /* ignore */ }
   }
 
+  // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.
+  // No real secrets exist in the container environment.
+  // If Ollama is configured, override ANTHROPIC env vars to use local Ollama instead.
+  const sdkEnv: Record<string, string | undefined> = { ...process.env };
+
   // Set model in sdkEnv for Ollama if configured
   if (modelConfig.provider === 'ollama' && modelConfig.model) {
-    // Auto-detect gateway IP for Ollama host
-    let gatewayIP = '192.168.64.1';
-    try {
-      const { execSync } = require('child_process');
-      gatewayIP = execSync('ipconfig getifaddr bridge100', { encoding: 'utf-8' }).trim();
-    } catch { /* use default */ }
-
-    // Use model from config
-    sdkEnv.model = modelConfig.model;
-    // Set API to Ollama endpoint
-    sdkEnv.ANTHROPIC_BASE_URL = `http://${gatewayIP}:11434`;
+    // Use host.docker.internal for Docker Desktop (standard Docker networking)
+    sdkEnv.ANTHROPIC_BASE_URL = 'http://host.docker.internal:11434';
     sdkEnv.ANTHROPIC_AUTH_TOKEN = 'ollama';
     sdkEnv.ANTHROPIC_API_KEY = 'ollama';
+    sdkEnv.model = modelConfig.model;
   }
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
