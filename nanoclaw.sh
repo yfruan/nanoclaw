@@ -74,11 +74,23 @@ ollama_run() {
 
 # 停止本地 Ollama
 ollama_stop() {
-    if pgrep -f "ollama serve" > /dev/null; then
-        pkill -f "ollama serve"
-        echo "Ollama stopped"
-    else
+    # 检查 ollama 是否在运行
+    if ! pgrep -f "Ollama" > /dev/null && ! pgrep -f "ollama serve" > /dev/null; then
         echo "Ollama is not running"
+        return 0
+    fi
+
+    # 使用 killall 停止 Ollama 应用，防止其自动重启 ollama serve
+    killall Ollama 2>/dev/null || true
+
+    # 等待进程终止
+    sleep 1
+
+    # 验证是否已停止
+    if pgrep -f "Ollama" > /dev/null || pgrep -f "ollama serve" > /dev/null; then
+        echo "Warning: Some Ollama processes may still be running"
+    else
+        echo "Ollama stopped"
     fi
 }
 
