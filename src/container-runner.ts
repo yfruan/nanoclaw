@@ -267,6 +267,21 @@ function buildContainerArgs(
     args.push('-e', `MINIMAX_API_HOST=${miniMaxEnv.MINIMAX_API_HOST}`);
   }
 
+  // Pass Claude model config to container
+  const claudeModelEnv = readEnvFile([
+    'ANTHROPIC_MODEL',
+    'ANTHROPIC_DEFAULT_OPUS_MODEL',
+    'ANTHROPIC_DEFAULT_SONNET_MODEL',
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+    'API_TIMEOUT_MS',
+    'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
+  ]);
+  for (const [key, value] of Object.entries(claudeModelEnv)) {
+    if (value) {
+      args.push('-e', `${key}=${value}`);
+    }
+  }
+
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
 
