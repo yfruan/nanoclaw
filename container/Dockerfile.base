@@ -38,7 +38,7 @@ ENV UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Prefer IPv4 for DNS resolution (required for Apple Container NAT)
+# Prefer IPv4 for DNS resolution
 ENV NODE_OPTIONS=--dns-result-order=ipv4first
 
 # Install agent-browser and claude-code globally
